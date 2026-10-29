@@ -43,6 +43,7 @@ The project builds a fictional company's customer-support assistant, attacks it 
 15. [Six-Week Roadmap](#15-six-week-roadmap)
 16. [Definition of Done](#16-definition-of-done)
 17. [Contributing and Future Work](#17-contributing-and-future-work)
+18. [Team Execution Plan & Progress Tracker](#18-team-execution-plan--progress-tracker)
 
 ---
 
@@ -1339,6 +1340,192 @@ security(gateway): fail-closed when policy state unresolvable
 - Multi-tenant memory isolation
 - Formal threat modeling tooling integration
 - Automated holdout evaluation CI run
+
+---
+
+## 18. Team Execution Plan & Progress Tracker
+
+Cybotech is built by two developers using AI coding agents with clearly separated ownership and shared integration responsibilities. Developer A owns the agent intelligence, attack tooling, and evaluation engine. Developer B owns the memory security layer, policy enforcement, and observability. Both share interface design, security-critical reviews, and end-to-end integration.
+
+> The Policy Enforcement Gateway is **deterministic security code**, not another autonomous AI agent. It makes and enforces the final authorization decision in application code. No LLM output, including Sentinel AI findings, can override a hard gateway denial.
+
+### Progress summary
+
+> Update these counts whenever a checklist item is checked or unchecked. The Markdown checkboxes below are the single source of truth — do not guess or pre-fill counts.
+
+| Developer | Completed | Total |
+|---|---|---|
+| Developer A — Agent Intelligence & Red Team | 0 | 34 |
+| Developer B — Agent Defense & Trust | 0 | 39 |
+| Shared Integration & Release | 0 | 16 |
+
+---
+
+### Developer A: Agent Intelligence & Red Team
+
+**Primary ownership:** Primary Assistant Agent · LLM provider adapter · Synthetic email and document tools · Mock corporate tools · Sandboxed vulnerable baseline · Vibe Hacker · Attack scenarios and fixtures · Attack runner · Evaluation engine · Attack Lab and evaluation comparison views (frontend, where applicable).
+
+**Key constraint:** The Primary Assistant must produce structured memory proposals and action proposals. It must never write directly to trusted memory or call a tool while bypassing the Policy Enforcement Gateway.
+
+**Vibe Hacker constraint:** All experiments use synthetic data and sandboxed mock tools only. Iteration is bounded by `RED_TEAM_MAX_ITERATIONS`. No real credentials, real email, or external services.
+
+#### Week 1 — Agent foundation
+
+- [ ] Agree on shared memory-proposal and action-proposal interface contracts with Developer B
+- [ ] Implement the Primary Assistant's basic task-intake and workflow loop
+- [ ] Define and implement the model-provider adapter interface (OpenAI SDK behind a replaceable abstraction)
+- [ ] Implement synthetic email-reading and document-reading tools
+- [ ] Implement mock customer-record lookup and simulated report-generation tools
+- [ ] Demonstrate one complete legitimate support task end to end with audit events recorded
+
+#### Week 2 — Vulnerable baseline
+
+- [ ] Implement the explicitly sandboxed vulnerable baseline configuration (no Memory Guard, no gateway)
+- [ ] Create reproducible memory-poisoning attack fixtures (synthetic malicious emails and documents)
+- [ ] Create simulated unauthorized-disclosure scenarios (report sent to unapproved destination)
+- [ ] Create workflow-hijacking scenarios (approval bypassed or unrelated action triggered)
+- [ ] Implement clean state reset between reproducible runs
+- [ ] Record actual outcomes with model name, provider version, configuration, and seed for every run
+
+#### Week 3 — Assistant integration
+
+- [ ] Integrate the Memory Guard proposal interface: all memory writes go through `memory_guard.propose_memory()`
+- [ ] Integrate trusted memory retrieval through the agreed `retrieval.retrieve()` interface
+- [ ] Ensure all action proposals are submitted to the Policy Enforcement Gateway; no direct tool calls from agent code
+- [ ] Implement structured, typed, validated action proposals (`ActionProposal` dataclass)
+- [ ] Add tests for malformed model outputs and ordinary legitimate tasks (no regression)
+
+#### Week 4 — Vibe Hacker and containment tests
+
+- [ ] Implement the bounded Vibe Hacker runner with `RED_TEAM_MAX_ITERATIONS` enforcement
+- [ ] Add repeatable attack execution with per-run metadata capture and outcome assertions
+- [ ] Test attack variants against the protected workflow (`memory_guard`, `policy_gateway`, `full` configurations)
+- [ ] Test detector-miss scenario: Sentinel mocked to return `PROCEED` for a prohibited action
+- [ ] Verify that a gateway-denied tool action never reaches the mock tool (programmatic assertion)
+
+#### Week 5 — Evaluation
+
+- [ ] Implement and run evaluation for the unprotected baseline configuration
+- [ ] Implement and run evaluation for Memory Guard only configuration
+- [ ] Implement and run evaluation for policy gateway only configuration
+- [ ] Implement and run evaluation for full protection configuration
+- [ ] Calculate all metrics from programmatically verified outcomes (memory table, tool-call table, audit events)
+- [ ] Produce a reproducible results report with actual measured values — no fabricated percentages
+
+#### Week 6 — Hardening and demonstration
+
+- [ ] Fix all integration defects found in agent and attack-runner modules
+- [ ] Verify clean test setup and reproducible attack runs from a fresh state
+- [ ] Prepare an honest demonstration showing both successful attacks (baseline) and containment (protected)
+- [ ] Document model/provider settings, evaluation configuration, and limitations
+- [ ] Prepare interview explanations of agent workflow design, attack construction, and evaluation methodology
+- [ ] Walk Developer B through the full workflow end to end
+
+---
+
+### Developer B: Agent Defense & Trust
+
+**Primary ownership:** Memory Guard · Memory provenance and trust metadata · PostgreSQL memory lifecycle · pgvector integration · Trusted retrieval and revocation checks · Sentinel AI (read-only, pre-execution reviewer) · Deterministic Policy Enforcement Gateway · Approval validation and tool authorization · Security event and audit subsystem · Memory inspection, security timeline, and dashboard integration.
+
+**Key constraints:**
+- Untrusted content must never silently become trusted memory. Every state transition is explicit.
+- Retrieval candidates from pgvector must be revalidated against authoritative PostgreSQL state before entering model context.
+- Unauthorized actions must be denied by deterministic application code in the gateway, regardless of Sentinel's output.
+- Sentinel AI is advisory only. Its `recommendation: PROCEED` does not authorize an action.
+
+#### Week 1 — Security and persistence foundation
+
+- [ ] Agree on shared memory-proposal, security-decision, and audit-event contracts with Developer A
+- [ ] Implement PostgreSQL schema and memory data models (`sessions`, `documents`, `memories`, `memory_provenance`, `audit_events`)
+- [ ] Define memory provenance structure: source type, trust level, claimed authority, authority-verified flag
+- [ ] Define lifecycle states and permitted transitions: `pending → trusted | quarantined | rejected`; `trusted → expired | revoked`
+- [ ] Establish the 15 security invariants and initial audit-event format
+- [ ] Demonstrate persistent storage and retrieval of a legitimate fact across sessions
+
+#### Week 2 — Memory Guard
+
+- [ ] Implement structured memory-proposal validation against the agreed `MemoryProposal` interface
+- [ ] Implement deterministic baseline memory trust rules: source trust level vs. category minimum requirements
+- [ ] Implement all lifecycle states: `trusted`, `quarantined`, `rejected`, `expired`, `revoked`
+- [ ] Implement quarantine storage and memory-inspection endpoint (`GET /api/v1/memories`)
+- [ ] Record provenance and rationale for every security decision in `memory_provenance`
+- [ ] Add tests proving that suspicious proposals from untrusted sources cannot silently become trusted memory
+
+#### Week 3 — Retrieval and Sentinel
+
+- [ ] Implement pgvector-based candidate retrieval using the agreed architecture (ANN search → canonical record resolution)
+- [ ] Revalidate every retrieved candidate against authoritative PostgreSQL state (status, expiry, revocation, permissions)
+- [ ] Exclude quarantined, revoked, expired, unauthorized, and unverifiable records from all retrieval results
+- [ ] Implement Sentinel AI's structured read-only pre-execution review (`SentinelFinding` output with risk level and rationale)
+- [ ] Implement and test Sentinel failure handling: timeout → deny; malformed output → deny; unavailable → follow explicit policy
+- [ ] Add tests proving Sentinel output cannot override gateway authorization rules (invariant 6)
+
+#### Week 4 — Policy enforcement and containment
+
+- [ ] Implement the deterministic Policy Enforcement Gateway with all seven check steps
+- [ ] Enforce tool allowlist and principal identity checks
+- [ ] Enforce typed argument validation and destination allowlist (`ALLOWED_EMAIL_DESTINATIONS`)
+- [ ] Enforce approval requirement: approval record must exist, be unexpired, and be bound to exact action hash
+- [ ] Test gateway when Sentinel AI mock returns `PROCEED` for a prohibited action — gateway must still deny
+- [ ] Test gateway with malformed approvals, unavailable policy state (DB down → deny), and expired approvals
+- [ ] Verify programmatically that unauthorized actions are blocked before the mock tool executes (invariant 4, 14)
+
+#### Week 5 — Observability and integration
+
+- [ ] Integrate every security decision with a structured, attributable audit event in `audit_events`
+- [ ] Implement or connect SSE publisher and `GET /api/v1/events` endpoint with `Last-Event-ID` replay
+- [ ] Display memory state, lifecycle transitions, and provenance in the dashboard memory view
+- [ ] Display proposed tool actions, Sentinel findings, and final gateway decisions in the timeline view
+- [ ] Connect dashboard to attack run and evaluation results
+- [ ] Test SSE disconnection and historical event recovery (reconnect with `Last-Event-ID`)
+- [ ] Complete integration checkpoint with Developer A: attack runner produces events visible in the dashboard
+
+#### Week 6 — Hardening and demonstration
+
+- [ ] Run memory-poisoning and retrieval regression tests; all security invariant tests must pass
+- [ ] Run policy-enforcement and failure-path tests (DB unavailable, Sentinel timeout, malformed approval)
+- [ ] Verify memory revocation takes effect immediately at retrieval time
+- [ ] Verify that dashboard or Sentinel failure does not disable gateway enforcement (invariant 15)
+- [ ] Confirm that audit events accurately reflect all observed security outcomes
+- [ ] Prepare an end-to-end defense demonstration (quarantine → retrieval absence → gateway denial → audit trail)
+- [ ] Prepare interview explanations covering trust boundaries, provenance design, retrieval security, and gateway enforcement
+
+---
+
+### Shared Integration & Release Checklist
+
+Both developers must agree before marking any item here complete.
+
+- [ ] Freeze shared `MemoryProposal`, `ActionProposal`, `GatewayDecision`, `AuditEvent`, and tool-result schemas before parallel implementation begins
+- [ ] Verify both developers use compatible request and response contracts at every interface boundary
+- [ ] Integrate the Primary Assistant with Memory Guard: all memory writes go through `propose_memory()` and return a `MemoryDecision`
+- [ ] Integrate trusted retrieval: the assistant receives only records that have passed the canonical state check
+- [ ] Integrate Sentinel's structured finding into the gateway flow: finding is recorded before the gateway decides
+- [ ] Verify that every tool action passes through the gateway; confirm no bypass path exists in agent code
+- [ ] Verify that untrusted memory from an attack email cannot reach the assistant as trusted context
+- [ ] Reproduce the same attack cases across all four configurations and compare outcomes programmatically
+- [ ] Verify that evaluation metrics are calculated from database state and audit records, not model-generated explanations
+- [ ] Run the full available test suite including all 15 security invariant tests
+- [ ] Verify that synthetic data and sandboxed mock tools are used throughout the demo; no real email sent
+- [ ] Test the primary failure scenarios: DB unavailable, Sentinel timeout, expired approval, revoked memory in retrieval
+- [ ] Verify installation and full execution from a clean checkout using the README instructions
+- [ ] Record actual measured evaluation results with model/provider metadata; mark all unrun results as TBD
+- [ ] Complete the end-to-end demonstration: malicious email → baseline attack → Memory Guard quarantine → gateway denial → audit evidence
+- [ ] Confirm both developers can independently explain the complete system architecture, security invariants, and evaluation design
+
+---
+
+### Completion criteria
+
+A checklist item may be marked `[x]` only when **all five** of these conditions are met:
+
+1. **Implementation exists** — the code, configuration, or document is committed and present in the repository.
+2. **Relevant tests pass** — the behavior is covered by at least one test that actually executes the code path.
+3. **Behavior observed or reproduced** — the outcome has been seen in a real or test run, not merely inferred from the code.
+4. **Security invariants satisfied** — no relevant invariant from §6 is broken by this change.
+5. **Integration complete where applicable** — if the item connects two components, both sides work together.
+
+Do not mark an item complete because its design exists, its directory was scaffolded, or its interface was drafted. Mark your own items after verification. Mark shared items only after both developers have confirmed the integration works.
 
 ---
 
