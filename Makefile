@@ -48,7 +48,7 @@ backend-install: ## Install backend dependencies with uv
 	cd backend && uv sync --frozen
 
 backend-dev: ## Start the FastAPI dev server (requires DB running)
-	cd backend && uv run uvicorn cybotech.main:app --reload --host 0.0.0.0 --port 8000
+	cd backend && uv run uvicorn cybotech.main:app --reload --host 127.0.0.1 --port 8000
 
 backend-test: ## Run backend tests with pytest
 	cd backend && uv run pytest tests/ -v

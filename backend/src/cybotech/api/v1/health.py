@@ -9,7 +9,6 @@ All other endpoints are planned for Week 1+ implementation.
 from __future__ import annotations
 
 import time
-from typing import Any
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -31,7 +30,7 @@ async def health_check() -> JSONResponse:
     # NOTE: Real dependency checks are planned for Week 1.
     # Currently returns a minimal healthy response to verify the app starts.
     dependencies: dict[str, str] = {
-        "database": "unknown",   # will be 'healthy'/'unhealthy' once DB layer is wired
+        "database": "unknown",  # will be 'healthy'/'unhealthy' once DB layer is wired
         "pgvector": "unknown",
         "llm_provider": "unknown",
     }

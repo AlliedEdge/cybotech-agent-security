@@ -9,6 +9,8 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+MemoryState = Literal["trusted", "quarantined", "rejected", "pending", "expired", "revoked"]
+
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
@@ -36,7 +38,7 @@ class MemoryProposal(Record):
 
 class MemoryDecision(Record):
     proposal_id: str
-    status: Literal["trusted", "quarantined", "rejected", "pending"]
+    status: MemoryState
     reason: str
     decided_at: datetime = Field(default_factory=utc_now)
 
@@ -64,6 +66,7 @@ class ActionProposal(Record):
     task_id: str
     user_task_description: str
     retrieved_memory_ids: list[str]
+    approval_id: str | None = None
     proposed_at: datetime = Field(default_factory=utc_now)
 
 

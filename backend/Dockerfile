@@ -16,7 +16,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 WORKDIR /app
 
 # Copy dependency manifests only — layer cached until pyproject.toml changes
-COPY pyproject.toml ./
+COPY pyproject.toml uv.lock ./
 
 # Install dependencies into /app/.venv (no dev/test extras)
 RUN uv sync --no-dev --frozen
@@ -37,6 +37,8 @@ COPY --from=deps /app/.venv /app/.venv
 
 # Copy application source
 COPY src/ ./src/
+COPY migrations/ ./migrations/
+COPY alembic.ini ./alembic.ini
 
 # Make uv-installed binaries available
 ENV PATH="/app/.venv/bin:$PATH"
@@ -55,4 +57,4 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
 
 # Start Uvicorn
 # For production: remove --reload and set --workers to match CPU count
-CMD ["uvicorn", "cybotech.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["sh", "-c", "alembic upgrade head && uvicorn cybotech.main:app --host 0.0.0.0 --port 8000 --reload"]
