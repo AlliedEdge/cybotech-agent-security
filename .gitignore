@@ -1,0 +1,206 @@
+# =============================================================================
+# Cybotech — Root .gitignore
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Environment files and secrets
+# IMPORTANT: .env.example files ARE tracked — see negation rules below
+# -----------------------------------------------------------------------------
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+.env.staging
+.env.test
+!.env.example
+!**/.env.example
+*.secret
+*.secrets
+secrets/
+credentials/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+local.certs/
+
+# -----------------------------------------------------------------------------
+# Python bytecode and caches
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+.Python
+
+# -----------------------------------------------------------------------------
+# Python virtual environments and build artifacts
+# -----------------------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.env/
+.uv/
+uv.lock
+*.egg-info/
+dist/
+build/
+*.egg
+wheels/
+pip-wheel-metadata/
+*.whl
+
+# -----------------------------------------------------------------------------
+# pytest, coverage, and test artifacts
+# -----------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+coverage/
+htmlcov/
+.tox/
+.nox/
+junit.xml
+test-results/
+*.log
+
+# -----------------------------------------------------------------------------
+# Ruff, mypy, and type checker caches
+# -----------------------------------------------------------------------------
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+.pyre/
+
+# -----------------------------------------------------------------------------
+# Node modules and frontend build output
+# -----------------------------------------------------------------------------
+node_modules/
+frontend/node_modules/
+.pnpm-store/
+.npm/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Frontend build
+frontend/dist/
+frontend/build/
+dist/
+build/
+
+# -----------------------------------------------------------------------------
+# Vite and tool caches
+# -----------------------------------------------------------------------------
+.vite/
+frontend/.vite/
+*.tsbuildinfo
+.eslintcache
+.stylelintcache
+.parcel-cache/
+
+# -----------------------------------------------------------------------------
+# AI model weights, caches, embeddings, and large private datasets
+# -----------------------------------------------------------------------------
+models/
+*.gguf
+*.safetensors
+*.bin
+*.onnx
+*.pt
+*.pth
+*.pkl
+*.pickle
+.cache/huggingface/
+.cache/torch/
+.cache/transformers/
+embeddings/cache/
+embeddings/*.npy
+embeddings/*.npz
+vector_store/
+local_models/
+experiment_outputs/
+# Synthetic fixtures ARE committed; large private datasets are not
+evaluation/datasets/private/
+evaluation/reports/generated/
+*.parquet
+*.arrow
+
+# -----------------------------------------------------------------------------
+# SQLite files, database dumps, and local PostgreSQL data
+# -----------------------------------------------------------------------------
+*.sqlite3
+*.sqlite
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+pg_data/
+postgres_data/
+*.dump
+*.sql.gz
+*.backup
+
+# -----------------------------------------------------------------------------
+# Runtime logs and PID files
+# -----------------------------------------------------------------------------
+*.log
+logs/
+*.pid
+*.pid.lock
+*.sock
+celerybeat-schedule
+celerybeat.pid
+
+# -----------------------------------------------------------------------------
+# Temporary files and OS artifacts
+# -----------------------------------------------------------------------------
+.tmp/
+tmp/
+temp/
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V3
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# -----------------------------------------------------------------------------
+# Editor metadata
+# -----------------------------------------------------------------------------
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+.history/
+.vs/
+
+# -----------------------------------------------------------------------------
+# Local certificates and generated evaluation reports
+# Committed reports go in evaluation/reports/committed/
+# -----------------------------------------------------------------------------
+local.certs/
+*.local.crt
+*.local.key
+evaluation/reports/generated/
+
+# -----------------------------------------------------------------------------
+# Docker local overrides (compose.override.yaml may contain local secrets)
+# -----------------------------------------------------------------------------
+compose.override.yaml
+docker-compose.override.yml

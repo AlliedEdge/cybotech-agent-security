@@ -1,0 +1,94 @@
+# =============================================================================
+# Cybotech — .dockerignore
+# Excludes secrets, caches, local data, and unrelated artifacts from all
+# Docker build contexts. Keep this file in sync with .gitignore.
+# =============================================================================
+
+# Git history (large, never needed inside an image)
+.git/
+.gitignore
+.gitattributes
+
+# Environment files and secrets (injected at runtime, never baked in)
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.secret
+*.secrets
+secrets/
+credentials/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+local.certs/
+
+# Python virtual environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+htmlcov/
+.coverage
+coverage.xml
+
+# Node modules and frontend build output (rebuilt inside the image)
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+.pnpm-store/
+.vite/
+
+# AI model weights and large local datasets (never in an image)
+models/
+*.gguf
+*.safetensors
+*.bin
+*.onnx
+*.pt
+*.pth
+*.pkl
+embeddings/cache/
+vector_store/
+local_models/
+evaluation/datasets/private/
+evaluation/reports/generated/
+
+# Local PostgreSQL data directory
+pg_data/
+postgres_data/
+
+# OS and editor artifacts
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Logs and temp files
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+
+# Test output
+junit.xml
+test-results/
+
+# Docker override files (local secrets / port overrides)
+compose.override.yaml
+docker-compose.override.yml
+
+# CI / CD artifacts
+.github/

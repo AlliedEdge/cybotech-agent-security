@@ -1,0 +1,108 @@
+# =============================================================================
+# Cybotech — Docker Compose (local development)
+# Usage:
+#   docker compose up --build           # start all services
+#   docker compose up -d db             # start only the database
+#   docker compose down                 # stop and remove containers
+#   docker compose down -v              # also remove named volumes
+#
+# Secrets: copy .env.example → .env and fill in real values.
+# Never embed real secrets in this file or in Docker images.
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16 with pgvector extension
+  # Image: pgvector/pgvector ships pg16 + pgvector pre-installed.
+  # pgvector extension is enabled in the init script below.
+  # ---------------------------------------------------------------------------
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-cybotech}
+      POSTGRES_USER:     ${POSTGRES_USER:-cybotech_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./infra/docker/postgres/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    # Bind to loopback only — not publicly accessible by default.
+    # Remove or change 127.0.0.1 if your local setup requires external access.
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cybotech_user} -d ${POSTGRES_DB:-cybotech}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # FastAPI backend
+  # Built from backend/Dockerfile.
+  # Depends on the database being healthy before starting.
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      APP_ENV:              ${APP_ENV:-development}
+      APP_SECRET_KEY:       ${APP_SECRET_KEY:?APP_SECRET_KEY must be set in .env}
+      LOG_LEVEL:            ${LOG_LEVEL:-INFO}
+      POSTGRES_HOST:        db
+      POSTGRES_PORT:        5432
+      POSTGRES_DB:          ${POSTGRES_DB:-cybotech}
+      POSTGRES_USER:        ${POSTGRES_USER:-cybotech_user}
+      POSTGRES_PASSWORD:    ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      OPENAI_API_KEY:       ${OPENAI_API_KEY:?OPENAI_API_KEY must be set in .env}
+      OPENAI_MODEL:         ${OPENAI_MODEL:-gpt-4o-mini}
+      OPENAI_BASE_URL:      ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      ALLOWED_EMAIL_DESTINATIONS: ${ALLOWED_EMAIL_DESTINATIONS:-reports@internal.example,support@internal.example}
+      APPROVAL_TTL_SECONDS: ${APPROVAL_TTL_SECONDS:-300}
+      RED_TEAM_MAX_ITERATIONS: ${RED_TEAM_MAX_ITERATIONS:-50}
+      RED_TEAM_SEED:        ${RED_TEAM_SEED:-42}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # Mount source for hot-reload during development.
+      # Remove this volume mount in production images.
+      - ./backend/src:/app/src:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8000/api/v1/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # React / Vite frontend
+  # Built from frontend/Dockerfile.
+  # In development the Vite dev server proxies API calls to the backend.
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+      VITE_SSE_URL:      ${VITE_SSE_URL:-http://localhost:8000/api/v1/events}
+    ports:
+      - "127.0.0.1:5173:5173"
+    depends_on:
+      - backend
+
+# =============================================================================
+# Named volumes
+# pg_data persists the database across container restarts.
+# Remove with `docker compose down -v` for a completely clean reset.
+# =============================================================================
+volumes:
+  pg_data:
+    driver: local

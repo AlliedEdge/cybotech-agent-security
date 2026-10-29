@@ -1,0 +1,53 @@
+# =============================================================================
+# Cybotech — .editorconfig
+# https://editorconfig.org
+# =============================================================================
+
+root = true
+
+# ---- Global defaults --------------------------------------------------------
+[*]
+charset               = utf-8
+end_of_line           = lf
+indent_style          = space
+indent_size           = 4
+trim_trailing_whitespace = true
+insert_final_newline  = true
+
+# ---- Python -----------------------------------------------------------------
+[*.py]
+indent_size = 4
+
+# ---- TypeScript / JavaScript ------------------------------------------------
+[*.{ts,tsx,js,jsx,mjs,cjs}]
+indent_size = 2
+
+# ---- Web / config formats ---------------------------------------------------
+[*.{json,jsonc,json5}]
+indent_size = 2
+
+[*.{yaml,yml}]
+indent_size = 2
+
+[*.{html,css,scss,less}]
+indent_size = 2
+
+[*.{toml}]
+indent_size = 4
+
+# ---- Markdown ---------------------------------------------------------------
+[*.md]
+trim_trailing_whitespace = false
+indent_size              = 2
+
+# ---- Makefile (tabs required) -----------------------------------------------
+[Makefile]
+indent_style = tab
+
+# ---- Shell scripts ----------------------------------------------------------
+[*.sh]
+indent_size = 2
+
+# ---- SQL / migrations -------------------------------------------------------
+[*.sql]
+indent_size = 4

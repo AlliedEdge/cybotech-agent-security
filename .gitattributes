@@ -1,0 +1,74 @@
+# =============================================================================
+# Cybotech — .gitattributes
+# Normalise line endings so the repository is consistent across platforms.
+# =============================================================================
+
+# Default: normalise all text files to LF in the repository
+* text=auto eol=lf
+
+# Shell scripts must always be LF (shebang lines break on CRLF)
+*.sh    text eol=lf
+*.bash  text eol=lf
+
+# Windows batch files need CRLF when checked out on Windows
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# Source code
+*.py    text eol=lf diff=python
+*.ts    text eol=lf diff=typescript
+*.tsx   text eol=lf diff=typescript
+*.js    text eol=lf
+*.jsx   text eol=lf
+*.mjs   text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf diff=html
+*.json  text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.toml  text eol=lf
+*.ini   text eol=lf
+*.cfg   text eol=lf
+*.env.example text eol=lf
+
+# Documentation
+*.md    text eol=lf diff=markdown
+*.rst   text eol=lf
+*.txt   text eol=lf
+
+# Docker
+Dockerfile* text eol=lf
+*.dockerfile text eol=lf
+
+# SQL / migrations
+*.sql   text eol=lf
+
+# Binary assets — do not mangle line endings
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.svg   text eol=lf
+*.webp  binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.eot   binary
+*.pdf   binary
+*.zip   binary
+*.tar   binary
+*.gz    binary
+*.gguf  binary
+*.safetensors binary
+*.pt    binary
+*.pth   binary
+*.bin   binary
+*.pkl   binary
+*.parquet binary
+
+# Git linguist overrides (for GitHub language statistics)
+evaluation/datasets/synthetic/** linguist-generated=false
+docs/**                          linguist-documentation=true

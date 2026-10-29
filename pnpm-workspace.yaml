@@ -1,0 +1,8 @@
+# =============================================================================
+# Cybotech — pnpm workspace configuration
+# Declares the frontend package as the sole pnpm workspace member.
+# Run `pnpm install` from the repo root to install all workspace packages.
+# =============================================================================
+
+packages:
+  - "frontend"
