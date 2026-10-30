@@ -61,4 +61,4 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --dir frontend lint
       - run: pnpm --dir frontend build
-      - run: pnpm --dir frontend test --run
+      - run: pnpm --dir frontend exec vitest run
