@@ -51,6 +51,9 @@ services:
     environment:
       APP_ENV:              ${APP_ENV:-development}
       CYBOTECH_SECURITY_MODE: local_demo
+      CYBOTECH_MODEL_MODE: ${CYBOTECH_MODEL_MODE:-offline}
+      # Explicit local bridge peers only; published ports remain loopback-bound.
+      CYBOTECH_LOCAL_PROXY_HOSTS: ${CYBOTECH_LOCAL_PROXY_HOSTS:-172.30.52.1,192.168.65.1}
       APP_SECRET_KEY:       ${APP_SECRET_KEY:?APP_SECRET_KEY must be set in .env}
       LOG_LEVEL:            ${LOG_LEVEL:-INFO}
       POSTGRES_HOST:        db
@@ -75,7 +78,7 @@ services:
       # Remove this volume mount in production images.
       - ./backend/src:/app/src:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -fs http://localhost:8000/api/v1/health || exit 1"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -107,3 +110,10 @@ services:
 volumes:
   pg_data:
     driver: local
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.52.0/24
+          gateway: 172.30.52.1

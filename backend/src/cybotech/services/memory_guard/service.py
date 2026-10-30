@@ -43,6 +43,10 @@ class MemoryEmbedder(Protocol):
     def embed(self, text: str) -> list[float]: ...
 
 
+class MemoryReviewer(Protocol):
+    def is_suspicious(self, proposal: MemoryProposal) -> bool: ...
+
+
 def _event(
     event_type: str, actor: str, object_id: str, outcome: str, reason: str, payload: dict[str, Any]
 ) -> AuditEvent:
@@ -65,10 +69,12 @@ class MemoryGuard:
         db: Session,
         provenance_resolver: ProvenanceResolver | None = None,
         embedder: MemoryEmbedder | None = None,
+        reviewer: MemoryReviewer | None = None,
     ) -> None:
         self.db = db
         self.provenance_resolver = provenance_resolver
         self.embedder = embedder
+        self.reviewer = reviewer
 
     def propose_memory(self, proposal: MemoryProposal) -> MemoryDecision:
         if (
@@ -112,6 +118,13 @@ class MemoryGuard:
             )
         else:
             state, reason, trust = MemoryStatus.pending, "review_required", source["trust_level"]
+
+        if state == MemoryStatus.pending and self.reviewer is not None:
+            try:
+                if self.reviewer.is_suspicious(proposal):
+                    state, reason = MemoryStatus.quarantined, "semantic_review_flagged"
+            except Exception:
+                state, reason = MemoryStatus.quarantined, "semantic_review_unavailable"
 
         record = Memory(
             content=content,
@@ -182,6 +195,16 @@ class MemoryGuard:
                 "only pending or explicitly quarantined records can be reviewed as trusted"
             )
         previous = row.status.value
+        if target == MemoryStatus.trusted:
+            if row.embedding is None:
+                if self.embedder is None:
+                    raise ValueError("embedding provider required before memory approval")
+                vector = self.embedder.embed(row.content)
+                if len(vector) != 384:
+                    raise ValueError("embedding dimension must be 384")
+                row.embedding = vector
+                row.embedding_model = self.embedder.model_name
+            row.provenance = {**row.provenance, "review_verified": True, "reviewed_by": actor}
         row.status, row.reviewer, row.decision_reason = target, actor, reason
         if target == MemoryStatus.revoked:
             row.revoked_at, row.revoked_reason = datetime.now(UTC), reason

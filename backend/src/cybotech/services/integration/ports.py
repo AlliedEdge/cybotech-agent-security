@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from sqlalchemy.orm import Session
 
@@ -20,7 +20,7 @@ from cybotech.agents.contracts import (
 )
 from cybotech.infrastructure.database.models import AuditEvent
 from cybotech.infrastructure.sandbox.tools import SandboxDispatcher
-from cybotech.services.memory_guard.service import MemoryGuard
+from cybotech.services.memory_guard.service import MemoryGuard, MemoryReviewer
 from cybotech.services.policy_gateway.service import PolicyGateway
 from cybotech.services.retrieval.service import Embedder, RetrievalService
 from cybotech.services.sentinel.service import Sentinel, SentinelFinding
@@ -28,9 +28,19 @@ from cybotech.services.sentinel.service import Sentinel, SentinelFinding
 SourceResolver = Callable[[str, str], dict[str, Any] | None]
 
 
+class Reviewer(Protocol):
+    def review(self, proposal: ActionProposal) -> SentinelFinding: ...
+
+
 class MemoryGuardPort:
-    def __init__(self, db: Session, source_resolver: SourceResolver, embedder: Embedder) -> None:
-        self.guard = MemoryGuard(db, source_resolver, embedder)
+    def __init__(
+        self,
+        db: Session,
+        source_resolver: SourceResolver,
+        embedder: Embedder,
+        reviewer: MemoryReviewer | None = None,
+    ) -> None:
+        self.guard = MemoryGuard(db, source_resolver, embedder, reviewer)
 
     def propose_memory(self, proposal: MemoryProposal) -> MemoryDecision:
         return self.guard.propose_memory(proposal)
@@ -43,7 +53,10 @@ class TrustedRetrievalPort:
 
     def retrieve(self, query: RetrievalQuery) -> list[MemoryRecord]:
         rows = self.service.retrieve(
-            query.query_text, max_results=query.max_results, principal="primary_assistant"
+            query.query_text,
+            max_results=query.max_results,
+            principal="primary_assistant",
+            min_similarity=query.min_similarity,
         )
         return [
             MemoryRecord(
@@ -57,8 +70,8 @@ class TrustedRetrievalPort:
 
 
 class SentinelPortAdapter:
-    def __init__(self) -> None:
-        self.reviewer = Sentinel()
+    def __init__(self, reviewer: Reviewer | None = None) -> None:
+        self.reviewer = reviewer or Sentinel()
         self.findings: dict[str, dict[str, Any]] = {}
 
     def review(self, proposal: ActionProposal) -> dict[str, Any]:
@@ -128,8 +141,12 @@ def build_persistent_assistant(
     documents: list[Document],
     source_resolver: SourceResolver,
     correlation_id: str,
+    reviewer: Reviewer | None = None,
+    memory_reviewer: MemoryReviewer | None = None,
 ) -> Assistant:
-    ports = build_security_ports(db, embedder, source_resolver, correlation_id)
+    ports = build_security_ports(
+        db, embedder, source_resolver, correlation_id, reviewer, memory_reviewer
+    )
     dispatcher = SandboxDispatcher(documents)
     return Assistant(
         model=model,
@@ -143,12 +160,17 @@ def build_persistent_assistant(
 
 
 def build_security_ports(
-    db: Session, embedder: Embedder, source_resolver: SourceResolver, correlation_id: str
+    db: Session,
+    embedder: Embedder,
+    source_resolver: SourceResolver,
+    correlation_id: str,
+    reviewer: Reviewer | None = None,
+    memory_reviewer: MemoryReviewer | None = None,
 ) -> SecurityPorts:
     """Builds the Person A Assistant's existing ports without replacing its agent or tools."""
-    sentinel = SentinelPortAdapter()
+    sentinel = SentinelPortAdapter(reviewer)
     return SecurityPorts(
-        memory=MemoryGuardPort(db, source_resolver, embedder),
+        memory=MemoryGuardPort(db, source_resolver, embedder, memory_reviewer),
         retrieval=TrustedRetrievalPort(db, embedder),
         sentinel=sentinel,
         gateway=PolicyGatewayPort(db, sentinel),

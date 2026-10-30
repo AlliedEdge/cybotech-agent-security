@@ -19,7 +19,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 
 # Install dependencies into /app/.venv (no dev/test extras)
-RUN uv sync --no-dev --frozen
+RUN uv sync --no-dev --frozen --no-install-project
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime image

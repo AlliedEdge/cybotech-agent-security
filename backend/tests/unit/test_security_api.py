@@ -207,3 +207,46 @@ def test_security_mutations_reject_non_loopback_clients(api_client):
     with pytest.raises(HTTPException) as error:
         require_local_security_access(request)
     assert error.value.status_code == 403
+
+
+def test_lab_runs_are_isolated_recorded_and_replayable(api_client):
+    response = api_client.post(
+        "/api/v1/lab/runs",
+        json={
+            "case_ids": ["memory_poisoning-00"],
+            "configurations": ["baseline", "full"],
+            "mode": "offline",
+        },
+    )
+    assert response.status_code == 200
+    report = response.json()
+    assert report["evidence_kind"] == "scripted"
+    assert [row["attack_success"] for row in report["results"]] == [True, False]
+    assert api_client.get(f"/api/v1/lab/runs/{report['run_id']}").json() == report
+    assert api_client.get("/api/v1/memories").json()["total"] == 0
+
+
+def test_approval_binds_session_and_can_only_be_consumed_once(api_client):
+    payload = {
+        "tool_name": "send_report",
+        "arguments": {"destination": "reports@internal.example", "content": "synthetic report"},
+        "proposed_by": "primary_assistant",
+        "session_id": "s",
+        "task_id": "t",
+        "user_task_description": "Send the weekly report",
+        "retrieved_memory_ids": [],
+    }
+    approval_id = api_client.post("/api/v1/approvals", json=payload).json()["id"]
+    api_client.post(
+        f"/api/v1/approvals/{approval_id}/decision", json={"approved": True, "reviewer": "local"}
+    )
+    changed = {**payload, "session_id": "different", "approval_id": approval_id}
+    assert (
+        api_client.post("/api/v1/actions/authorize", json=changed).json()["decision"]["reason"]
+        == "approval_action_mismatch"
+    )
+    first = api_client.post(f"/api/v1/approvals/{approval_id}/execute")
+    second = api_client.post(f"/api/v1/approvals/{approval_id}/execute")
+    assert first.status_code == 200
+    assert first.json()["success"] is True
+    assert second.status_code == 409

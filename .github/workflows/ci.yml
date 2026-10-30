@@ -1,268 +1,64 @@
-# =============================================================================
-# Cybotech — CI workflow
-# Runs on every push and pull request to main.
-#
-# Current scope (foundation scaffold):
-#   - Validate file structure and configuration
-#   - Lint Python (Ruff) — requires backend deps installed
-#   - Type-check Python (mypy) — requires backend deps installed
-#   - Run backend unit tests (pytest) — requires backend deps installed
-#   - Lint TypeScript (ESLint) — requires frontend deps installed
-#   - Type-check TypeScript — requires frontend deps installed
-#
-# NOTE: Steps marked [PLANNED] will activate once the corresponding
-# implementation milestone is complete. They are written but gated
-# on the presence of a lock file (uv.lock / pnpm-lock.yaml).
-#
-# This workflow does NOT require production secrets.
-# OPENAI_API_KEY is not used in unit tests.
-# =============================================================================
-
 name: CI
-
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-
+permissions:
+  contents: read
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
-
-  # ---------------------------------------------------------------------------
-  # Validate repository scaffold
-  # Checks that required files exist and configuration is consistent.
-  # Runs without any language runtime dependencies.
-  # ---------------------------------------------------------------------------
-  validate-scaffold:
-    name: Validate scaffold
+  backend:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: cybotech_test_ci
+          POSTGRES_USER: cybotech
+          POSTGRES_PASSWORD: ci-only-password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cybotech -d cybotech_test_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://cybotech:ci-only-password@127.0.0.1:5432/cybotech_test_ci
+      CYBOTECH_TEST_DATABASE_URL: postgresql+psycopg://cybotech:ci-only-password@127.0.0.1:5432/cybotech_test_ci
+      CYBOTECH_MODEL_MODE: offline
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Check required root files exist
-        run: |
-          for f in \
-            README.md \
-            LICENSE \
-            .gitignore \
-            .gitattributes \
-            .editorconfig \
-            .dockerignore \
-            .env.example \
-            CONTRIBUTING.md \
-            SECURITY.md \
-            CODE_OF_CONDUCT.md \
-            Makefile \
-            compose.yaml \
-            pyproject.toml \
-            package.json \
-            pnpm-workspace.yaml; do
-            if [ ! -f "$f" ]; then
-              echo "MISSING: $f"
-              exit 1
-            fi
-          done
-          echo "All required root files present."
-
-      - name: Check .env.example files are tracked (not git-ignored)
-        run: |
-          git ls-files --error-unmatch .env.example
-          git ls-files --error-unmatch backend/.env.example
-          git ls-files --error-unmatch frontend/.env.example
-          echo ".env.example files are tracked correctly."
-
-      - name: Check backend source structure
-        run: |
-          for d in \
-            backend/src/cybotech \
-            backend/migrations \
-            backend/tests; do
-            if [ ! -d "$d" ]; then
-              echo "MISSING directory: $d"
-              exit 1
-            fi
-          done
-          for f in \
-            backend/src/cybotech/__init__.py \
-            backend/src/cybotech/main.py \
-            backend/src/cybotech/api/v1/health.py \
-            backend/pyproject.toml \
-            backend/alembic.ini \
-            backend/Dockerfile; do
-            if [ ! -f "$f" ]; then
-              echo "MISSING: $f"
-              exit 1
-            fi
-          done
-          echo "Backend source structure valid."
-
-      - name: Check frontend source structure
-        run: |
-          for f in \
-            frontend/package.json \
-            frontend/index.html \
-            frontend/vite.config.ts \
-            frontend/tsconfig.json \
-            frontend/tsconfig.app.json \
-            frontend/tsconfig.node.json \
-            frontend/src/main.tsx \
-            frontend/src/App.tsx \
-            frontend/Dockerfile; do
-            if [ ! -f "$f" ]; then
-              echo "MISSING: $f"
-              exit 1
-            fi
-          done
-          echo "Frontend source structure valid."
-
-      - name: Verify no real secrets in .env.example files
-        run: |
-          # Fail if any .env.example contains what looks like a real API key
-          # (a real sk- key with more than 20 chars after the prefix)
-          if grep -rE "sk-[A-Za-z0-9]{20,}" .env.example backend/.env.example frontend/.env.example 2>/dev/null; then
-            echo "FAIL: Possible real API key found in .env.example file"
-            exit 1
-          fi
-          echo "No real API keys detected in .env.example files."
-
-  # ---------------------------------------------------------------------------
-  # Backend — Python linting and type checking
-  # [PLANNED] Activates once backend/uv.lock exists (after `uv sync`)
-  # ---------------------------------------------------------------------------
-  backend-lint:
-    name: Backend lint & typecheck
-    runs-on: ubuntu-latest
-    # Gate: only run when uv.lock is committed (i.e., deps have been resolved)
-    if: ${{ hashFiles('backend/uv.lock') != '' }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install backend dependencies
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync --frozen --extra dev
         working-directory: backend
-        run: uv sync --frozen
-
-      - name: Ruff lint
+      - run: uv run --no-sync ruff check src tests
         working-directory: backend
-        run: uv run ruff check src/ tests/
-
-      - name: Ruff format check
+      - run: uv run --no-sync ruff format --check src tests
         working-directory: backend
-        run: uv run ruff format --check src/ tests/
-
-      - name: mypy type check
+      - run: uv run --no-sync mypy src
         working-directory: backend
-        run: uv run mypy src/
-
-  # ---------------------------------------------------------------------------
-  # Backend — pytest unit tests
-  # [PLANNED] Activates once backend/uv.lock exists
-  # ---------------------------------------------------------------------------
-  backend-test:
-    name: Backend tests
+      - run: uv run --no-sync alembic upgrade head
+        working-directory: backend
+      - run: uv run --no-sync pytest tests -q
+        working-directory: backend
+      - run: docker build -t cybotech-backend-check backend
+  frontend:
     runs-on: ubuntu-latest
-    if: ${{ hashFiles('backend/uv.lock') != '' }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
         with:
-          version: "latest"
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+          version: "9.15.0"
+      - uses: actions/setup-node@v4
         with:
-          python-version: "3.12"
-
-      - name: Install backend dependencies (with dev extras)
-        working-directory: backend
-        run: uv sync --frozen
-
-      - name: Run unit tests
-        working-directory: backend
-        run: uv run pytest tests/unit/ -v --tb=short -m "not integration and not slow"
-
-  # ---------------------------------------------------------------------------
-  # Frontend — TypeScript type checking and lint
-  # [PLANNED] Activates once frontend/pnpm-lock.yaml exists
-  # ---------------------------------------------------------------------------
-  frontend-lint:
-    name: Frontend lint & typecheck
-    runs-on: ubuntu-latest
-    if: ${{ hashFiles('frontend/pnpm-lock.yaml') != '' }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: "9"
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "pnpm"
-          cache-dependency-path: frontend/pnpm-lock.yaml
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: pnpm install --frozen-lockfile
-
-      - name: TypeScript type check
-        working-directory: frontend
-        run: pnpm typecheck
-
-      - name: ESLint
-        working-directory: frontend
-        run: pnpm lint
-
-  # ---------------------------------------------------------------------------
-  # Frontend — Vitest unit tests
-  # [PLANNED] Activates once frontend/pnpm-lock.yaml exists
-  # ---------------------------------------------------------------------------
-  frontend-test:
-    name: Frontend tests
-    runs-on: ubuntu-latest
-    if: ${{ hashFiles('frontend/pnpm-lock.yaml') != '' }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: "9"
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "pnpm"
-          cache-dependency-path: frontend/pnpm-lock.yaml
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: pnpm install --frozen-lockfile
-
-      - name: Run tests
-        working-directory: frontend
-        run: pnpm test --run
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --dir frontend lint
+      - run: pnpm --dir frontend build
+      - run: pnpm --dir frontend exec vitest run

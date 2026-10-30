@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pgvector.sqlalchemy import Vector  # type: ignore[import-untyped]
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import JSON, DateTime, Enum, ForeignKey, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -15,7 +15,7 @@ class Base(DeclarativeBase):
     pass
 
 
-class MemoryStatus(str, enum.Enum):
+class MemoryStatus(enum.StrEnum):
     pending = "pending"
     trusted = "trusted"
     quarantined = "quarantined"
