@@ -120,6 +120,7 @@ class Assistant:
                             "task_id": task_id,
                             "tool_name": action.tool_name,
                             "arguments": action.arguments,
+                            "action": action.model_dump(mode="json", exclude={"proposed_at"}),
                         },
                     )
                     review_available = True

@@ -5,7 +5,8 @@ import os
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any
+from threading import Lock
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -16,13 +17,20 @@ from sqlalchemy.orm import Session
 
 from cybotech.agents.assistant import Assistant
 from cybotech.agents.contracts import ActionProposal, Document, MemoryProposal
-from cybotech.infrastructure.database.models import AuditEvent, Memory, MemoryStatus
+from cybotech.infrastructure.database.models import AuditEvent, Memory, MemoryStatus, PolicyDecision
 from cybotech.infrastructure.database.session import get_db
+from cybotech.infrastructure.llm.offline import LocalAssistantModel, LocalEmbedder
 from cybotech.infrastructure.llm.providers import OpenAIProvider
-from cybotech.services.integration.ports import build_persistent_assistant
-from cybotech.services.memory_guard.service import MemoryGuard
+from cybotech.infrastructure.sandbox.tools import SandboxDispatcher
+from cybotech.services.integration.ports import Reviewer, build_persistent_assistant
+from cybotech.services.integration.sources import registered_sources, resolve_registered_source
+from cybotech.services.memory_guard.model import ModelMemoryReviewer
+from cybotech.services.memory_guard.service import MemoryGuard, MemoryReviewer
 from cybotech.services.policy_gateway.service import PolicyGateway
-from cybotech.services.retrieval.service import OpenAIEmbedder
+from cybotech.services.red_team.corpus import corpus
+from cybotech.services.red_team.lab import Configuration, run_experiment
+from cybotech.services.retrieval.service import Embedder, OpenAIEmbedder
+from cybotech.services.sentinel.model import ModelSentinel
 from cybotech.services.sentinel.service import Sentinel
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -80,15 +88,102 @@ def require_local_security_access(request: Request) -> None:
     if os.getenv("CYBOTECH_SECURITY_MODE") != "local_demo":
         raise HTTPException(503, "Security API is disabled without configured authentication")
     client_host = request.client.host if request.client else ""
+    allowed_origins = {
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    }
+    if request.headers.get("origin") and request.headers["origin"] not in allowed_origins:
+        raise HTTPException(403, "Origin is not permitted for local security routes")
+    proxy_hosts = set(filter(None, os.getenv("CYBOTECH_LOCAL_PROXY_HOSTS", "").split(",")))
+    trusted_local_proxy = client_host in proxy_hosts and request.url.hostname in {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+    }
     test_client = client_host == "testclient" and "PYTEST_CURRENT_TEST" in os.environ
-    if client_host not in {"127.0.0.1", "::1", "localhost"} and not test_client:
+    if (
+        client_host not in {"127.0.0.1", "::1", "localhost"}
+        and not test_client
+        and not trusted_local_proxy
+    ):
         raise HTTPException(403, "Local demo security routes accept loopback clients only")
 
 
 router = APIRouter(dependencies=[Depends(require_local_security_access)])
+lab_lock = Lock()
+
+
+class LabRunIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    case_ids: list[str] = Field(min_length=1, max_length=60)
+    configurations: list[Configuration] = Field(min_length=1, max_length=4)
+    mode: Literal["offline", "live"] = "offline"
+
+
+@router.get("/lab/cases")
+def lab_cases() -> dict[str, Any]:
+    return {"items": [case.model_dump(mode="json") for case in corpus()]}
+
+
+@router.post("/lab/runs")
+def run_lab(body: LabRunIn, db: DbSession) -> dict[str, Any]:
+    registry = {case.id: case for case in corpus()}
+    if len(set(body.case_ids)) != len(body.case_ids) or any(
+        i not in registry for i in body.case_ids
+    ):
+        raise HTTPException(422, "Case IDs must be known and unique")
+    if len(set(body.configurations)) != len(body.configurations):
+        raise HTTPException(422, "Configurations must be unique")
+    if body.mode == "live" and (runtime_mode() != "live" or len(body.case_ids) > 3):
+        raise HTTPException(422, "Live experiments require live mode and at most three cases")
+    if not lab_lock.acquire(blocking=False):
+        raise HTTPException(409, "An experiment is already running; wait for completion")
+    try:
+        model = (
+            OpenAIProvider(runtime_client(), os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+            if body.mode == "live"
+            else None
+        )
+        return run_experiment(db, [registry[i] for i in body.case_ids], body.configurations, model)
+    finally:
+        lab_lock.release()
+
+
+@router.get("/lab/runs")
+def lab_runs(db: DbSession) -> dict[str, Any]:
+    rows = db.scalars(
+        select(AuditEvent)
+        .where(AuditEvent.event_type == "lab_run_completed")
+        .order_by(desc(AuditEvent.id))
+        .limit(20)
+    ).all()
+    return {
+        "items": [
+            {key: value for key, value in row.payload.items() if key != "results"} for row in rows
+        ]
+    }
+
+
+@router.get("/lab/runs/{run_id}")
+def lab_run(run_id: str, db: DbSession) -> dict[str, Any]:
+    row = db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.event_type == "lab_run_completed", AuditEvent.correlation_id == run_id
+        )
+    )
+    if row is None:
+        raise HTTPException(404, "Completed experiment not found")
+    return row.payload
 
 
 def serialize_event(event: AuditEvent) -> dict[str, Any]:
+    payload = event.payload
+    if event.event_type == "lab_run_completed":
+        payload = {key: value for key, value in payload.items() if key != "results"}
+    elif event.event_type == "lab_case_completed":
+        payload = {key: value for key, value in payload.items() if key != "trace"}
     return {
         "id": event.event_id,
         "type": event.event_type,
@@ -98,7 +193,7 @@ def serialize_event(event: AuditEvent) -> dict[str, Any]:
         "object_id": event.object_id,
         "outcome": event.outcome,
         "reason_code": event.reason_code,
-        "payload": event.payload,
+        "payload": payload,
     }
 
 
@@ -111,16 +206,9 @@ def propose_memory(body: ProposalIn, db: DbSession) -> dict[str, str]:
         claimed_category=body.category,
         raw_context=body.source_context,
     )
-    trusted_sources = set(filter(None, os.getenv("CYBOTECH_VERIFIED_SOURCE_IDS", "").split(",")))
-
-    def resolver(source_id: str, _context: str) -> dict[str, str]:
-        return {
-            "source_type": body.source_type,
-            "trust_level": "verified" if source_id in trusted_sources else "untrusted",
-            "source_id": source_id,
-        }
-
-    guard = MemoryGuard(db, resolver)
+    guard = MemoryGuard(
+        db, resolve_registered_source, runtime_embedder(), runtime_memory_reviewer()
+    )
     # Trust is an application-side decision; caller-supplied trust labels are intentionally ignored.
     result = guard.propose_memory(proposal)
     return {"id": result.proposal_id, "status": result.status, "reason": result.reason}
@@ -173,7 +261,9 @@ def _transition(
     memory_id: uuid.UUID, status: MemoryStatus, actor: str, reason: str, db: Session
 ) -> dict[str, Any]:
     try:
-        row = MemoryGuard(db).transition(memory_id, status, actor, reason)
+        row = MemoryGuard(db, embedder=runtime_embedder()).transition(
+            memory_id, status, actor, reason
+        )
     except LookupError:
         raise HTTPException(404, "Memory not found") from None
     except ValueError as exc:
@@ -220,7 +310,7 @@ def _memory(m: Memory) -> dict[str, Any]:
 
 @router.post("/actions/review")
 def review_action(body: ActionIn) -> dict[str, Any]:
-    finding = Sentinel().review(ActionProposal(**body.model_dump()))
+    finding = runtime_reviewer().review(ActionProposal(**body.model_dump()))
     return finding.model_dump()
 
 
@@ -229,7 +319,7 @@ def authorize_action(body: ActionIn, db: DbSession) -> dict[str, Any]:
     proposal = ActionProposal(
         **body.model_dump(exclude={"approval_id"}), approval_id=body.approval_id
     )
-    finding = Sentinel().review(proposal)
+    finding = runtime_reviewer().review(proposal)
     decision = PolicyGateway(db).authorize(
         proposal, sentinel_finding=finding, approval_id=body.approval_id
     )
@@ -239,43 +329,79 @@ def authorize_action(body: ActionIn, db: DbSession) -> dict[str, Any]:
 @router.post("/approvals")
 def request_approval(body: ActionIn, db: DbSession) -> dict[str, Any]:
     proposal = ActionProposal(**body.model_dump(exclude={"approval_id"}))
+    ttl = max(30, min(int(os.getenv("APPROVAL_TTL_SECONDS", "300")), 900))
     approval_id = PolicyGateway(db).create_approval(
-        proposal, "local_demo", datetime.now(UTC) + timedelta(minutes=15)
+        proposal, "local_demo", datetime.now(UTC) + timedelta(seconds=ttl)
     )
-    return {"id": approval_id, "status": "pending", "expires_in_seconds": 900}
+    return {"id": approval_id, "status": "pending", "expires_in_seconds": ttl}
 
 
-def create_runtime_assistant(db: Session, documents: list[Document], task_id: str) -> Assistant:
+def runtime_client() -> OpenAI:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise HTTPException(503, "Assistant model and embedding provider are not configured")
-    client = OpenAI(
+    return OpenAI(
         api_key=api_key,
         base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        timeout=30,
+        max_retries=0,
     )
-    embedder = OpenAIEmbedder(client)
-    verified_sources = set(filter(None, os.getenv("CYBOTECH_VERIFIED_SOURCE_IDS", "").split(",")))
 
-    def resolve_source(source_id: str, _context: str) -> dict[str, str]:
-        if source_id not in verified_sources:
-            return {
-                "source_type": "user_supplied",
-                "trust_level": "untrusted",
-                "source_id": source_id,
-            }
-        return {
-            "source_type": "configured_verified_source",
-            "trust_level": "verified",
-            "source_id": source_id,
-        }
 
+def runtime_mode() -> str:
+    mode = os.getenv("CYBOTECH_MODEL_MODE", "offline")
+    if mode not in {"offline", "live"}:
+        raise HTTPException(503, "CYBOTECH_MODEL_MODE must be offline or live")
+    return mode
+
+
+def runtime_embedder() -> Embedder:
+    return OpenAIEmbedder(runtime_client()) if runtime_mode() == "live" else LocalEmbedder()
+
+
+def runtime_reviewer() -> Reviewer:
+    mode = os.getenv("CYBOTECH_REVIEW_MODE", "deterministic")
+    if mode == "deterministic":
+        return Sentinel()
+    if mode == "model" and runtime_mode() == "live":
+        return ModelSentinel(runtime_client(), os.getenv("OPENAI_REVIEW_MODEL", "gpt-4o-mini"))
+    raise HTTPException(503, "Reviewer mode must be deterministic or model with live mode enabled")
+
+
+def runtime_memory_reviewer() -> MemoryReviewer | None:
+    if os.getenv("CYBOTECH_REVIEW_MODE", "deterministic") == "model":
+        if runtime_mode() != "live":
+            raise HTTPException(503, "Model review requires live mode")
+        return ModelMemoryReviewer(
+            runtime_client(), os.getenv("OPENAI_REVIEW_MODEL", "gpt-4o-mini")
+        )
+    runtime_reviewer()
+    return None
+
+
+@router.get("/documents")
+def documents_catalog() -> dict[str, Any]:
+    return {"items": [doc.model_dump() for doc in registered_sources()]}
+
+
+@router.get("/runtime")
+def runtime_configuration() -> dict[str, str]:
+    reviewer = os.getenv("CYBOTECH_REVIEW_MODE", "deterministic")
+    return {"mode": runtime_mode(), "reviewer": reviewer, "tools": "simulated"}
+
+
+def create_runtime_assistant(db: Session, documents: list[Document], task_id: str) -> Assistant:
     return build_persistent_assistant(
         db,
-        OpenAIProvider(client, os.getenv("OPENAI_MODEL", "gpt-4o-mini")),
-        embedder,
+        OpenAIProvider(runtime_client(), os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+        if runtime_mode() == "live"
+        else LocalAssistantModel(),
+        runtime_embedder(),
         documents,
-        resolve_source,
+        resolve_registered_source,
         task_id,
+        runtime_reviewer(),
+        runtime_memory_reviewer(),
     )
 
 
@@ -299,6 +425,60 @@ def decide_approval(approval_id: str, body: ApprovalIn, db: DbSession) -> dict[s
     except ValueError:
         raise HTTPException(404, "Pending approval not found") from None
     return {"id": approval_id, "status": status}
+
+
+@router.get("/approvals")
+def list_approvals(db: DbSession) -> dict[str, Any]:
+    rows = db.scalars(
+        select(PolicyDecision)
+        .where(PolicyDecision.approval_status.is_not(None))
+        .order_by(desc(PolicyDecision.created_at))
+        .limit(100)
+    ).all()
+    items = []
+    for row in rows:
+        event = db.scalar(
+            select(AuditEvent).where(
+                AuditEvent.event_type == "approval_requested", AuditEvent.object_id == row.id
+            )
+        )
+        items.append(
+            {
+                "id": row.id,
+                "status": row.approval_status,
+                "expires_at": row.approval_expires_at,
+                "consumed_at": row.approval_consumed_at,
+                "action": event.payload.get("action") if event else None,
+            }
+        )
+    return {"items": items}
+
+
+@router.post("/approvals/{approval_id}/execute")
+def execute_approved_report(approval_id: str, db: DbSession) -> dict[str, Any]:
+    event = db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.event_type == "approval_requested", AuditEvent.object_id == approval_id
+        )
+    )
+    if not event or not event.payload.get("action"):
+        raise HTTPException(404, "Recorded approval action not found")
+    proposal = ActionProposal.model_validate(event.payload["action"])
+    if proposal.tool_name != "send_report":
+        raise HTTPException(422, "Only simulated reports can execute from the approval queue")
+    finding = runtime_reviewer().review(proposal)
+    decision = PolicyGateway(db).authorize(
+        proposal, sentinel_finding=finding, approval_id=approval_id
+    )
+    if not decision.authorized:
+        raise HTTPException(409, decision.reason)
+    result = SandboxDispatcher([]).execute(proposal)
+    from cybotech.services.integration.ports import PersistentEventPort
+
+    PersistentEventPort(db, proposal.task_id).emit(
+        "tool_execution_completed", result.model_dump(mode="json")
+    )
+    return result.model_dump(mode="json")
 
 
 @router.get("/security-events")

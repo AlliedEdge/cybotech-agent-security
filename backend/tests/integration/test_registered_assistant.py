@@ -25,6 +25,7 @@ class FakeEmbedder:
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setenv("CYBOTECH_SECURITY_MODE", "local_demo")
+    monkeypatch.setenv("CYBOTECH_MODEL_MODE", "live")
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )

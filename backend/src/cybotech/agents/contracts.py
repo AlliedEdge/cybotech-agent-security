@@ -47,7 +47,7 @@ class RetrievalQuery(Record):
     query_text: str
     session_id: str
     max_results: int = 5
-    min_similarity: float = 0.7
+    min_similarity: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class MemoryRecord(Record):

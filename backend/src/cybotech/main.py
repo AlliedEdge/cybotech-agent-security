@@ -4,8 +4,7 @@ Cybotech FastAPI application factory.
 This module creates the FastAPI app instance, registers routers,
 configures middleware, and exposes the health endpoint.
 
-Status: foundation scaffold — only the health endpoint is implemented.
-All other routers are placeholders for Week 1+ implementation.
+Includes assistant orchestration, memory review, approvals, attack experiments, and audit replay.
 """
 
 from __future__ import annotations

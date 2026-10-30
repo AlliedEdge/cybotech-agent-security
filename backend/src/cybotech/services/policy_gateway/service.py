@@ -45,6 +45,10 @@ class PolicyGateway:
             "principal": proposal.proposed_by,
             "arguments": proposal.arguments,
             "policy_scope": "tool-execution",
+            "session_id": proposal.session_id,
+            "task_id": proposal.task_id,
+            "user_task": proposal.user_task_description,
+            "memory_ids": sorted(proposal.retrieved_memory_ids),
         }
         return hashlib.sha256(
             json.dumps(bound, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
@@ -127,7 +131,10 @@ class PolicyGateway:
                 or memory.status != MemoryStatus.trusted
                 or memory.revoked_at is not None
                 or (memory.expires_at is not None and _utc(memory.expires_at) <= datetime.now(UTC))
-                or memory.provenance.get("trust_level") not in {"verified", "internal"}
+                or not (
+                    memory.provenance.get("trust_level") in {"verified", "internal"}
+                    or memory.provenance.get("review_verified") is True
+                )
             ):
                 return "memory_reference_untrusted"
         schema = schemas[p.tool_name]
@@ -141,6 +148,8 @@ class PolicyGateway:
             finding is None or getattr(finding, "status", None) != "completed"
         ):
             return "sentinel_review_required"
+        if finding and finding.disposition in {"flag_for_denial", "additional_review"}:
+            return "sentinel_flagged_action"
         if p.tool_name == "send_report":
             if not approval_id:
                 return "approval_required"
@@ -156,6 +165,8 @@ class PolicyGateway:
                 return "approval_missing_or_expired"
             if row.action_hash != self.action_hash(p):
                 return "approval_action_mismatch"
+            if row.policy_version != self.policy_version:
+                return "approval_policy_changed"
             if row.approval_consumed_at is not None:
                 return "approval_already_consumed"
         return None
@@ -184,7 +195,7 @@ class PolicyGateway:
                 object_id=approval_id,
                 outcome="pending",
                 reason_code="sensitive_action",
-                payload={"tool": proposal.tool_name},
+                payload={"tool": proposal.tool_name, "action": proposal.model_dump(mode="json")},
             )
         )
         self.db.commit()

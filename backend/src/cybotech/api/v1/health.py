@@ -1,56 +1,52 @@
-"""
-Health endpoint — GET /api/v1/health
+"""Readiness checks; no billable model calls occur here."""
 
-Returns service status and dependency health.
-This is the only implemented endpoint in the foundation scaffold.
-All other endpoints are planned for Week 1+ implementation.
-"""
+import os
+from datetime import UTC, datetime
+from typing import Annotated
 
-from __future__ import annotations
-
-import time
-
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
+from sqlalchemy import select, text
+from sqlalchemy.orm import Session
+
+from cybotech import __version__
+from cybotech.infrastructure.database.models import Memory
+from cybotech.infrastructure.database.session import get_db
 
 router = APIRouter(tags=["health"])
 
 
 @router.get("/health")
-async def health_check() -> JSONResponse:
-    """
-    Return service health and dependency status.
-
-    Checks:
-    - Application is running
-    - Database connectivity (planned — returns 'unknown' until DB layer is wired)
-    - pgvector extension (planned)
-    - LLM provider reachability (planned)
-    """
-    # NOTE: Real dependency checks are planned for Week 1.
-    # Currently returns a minimal healthy response to verify the app starts.
-    dependencies: dict[str, str] = {
-        "database": "unknown",  # will be 'healthy'/'unhealthy' once DB layer is wired
-        "pgvector": "unknown",
-        "llm_provider": "unknown",
+def health_check(db: Annotated[Session, Depends(get_db)]) -> JSONResponse:
+    dependencies = {
+        "database": "unhealthy",
+        "pgvector": "not_applicable",
+        "llm_provider": "offline"
+        if os.getenv("CYBOTECH_MODEL_MODE", "offline") == "offline"
+        else "configured_not_probed"
+        if os.getenv("OPENAI_API_KEY")
+        else "unhealthy",
     }
-
-    all_healthy = all(v != "unhealthy" for v in dependencies.values())
-    overall_status = "healthy" if all_healthy else "degraded"
-
-    status_code = 200 if overall_status == "healthy" else 503
-
+    try:
+        db.execute(select(Memory.id).limit(0))
+        dependencies["database"] = "healthy"
+        if db.bind is not None and db.bind.dialect.name == "postgresql":
+            installed = db.scalar(
+                text("SELECT extversion FROM pg_extension WHERE extname='vector'")
+            )
+            dependencies["pgvector"] = "healthy" if installed else "unhealthy"
+    except Exception:
+        db.rollback()
+    healthy = "unhealthy" not in dependencies.values()
     return JSONResponse(
-        status_code=status_code,
+        status_code=200 if healthy else 503,
         content={
             "data": {
-                "status": overall_status,
-                "version": "0.1.0",
+                "status": "healthy" if healthy else "degraded",
+                "version": __version__,
                 "dependencies": dependencies,
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
-            "meta": {
-                "request_id": None,  # will be set by request-id middleware (planned)
-            },
+            "meta": {"request_id": None},
         },
     )

@@ -61,7 +61,7 @@ def test_embedded_instructions_are_quarantined(text, reason, db):
 
 
 def test_lifecycle_forbids_promotion_of_pending_and_revoked(db):
-    guard = MemoryGuard(db, lambda *_: None)
+    guard = MemoryGuard(db, lambda *_: None, FixedEmbedder())
     result = guard.propose_memory(proposal())
     row = db.get(Memory, __import__("uuid").UUID(result.proposal_id))
     guard.transition(row.id, MemoryStatus.trusted, "reviewer", "approve")
@@ -268,6 +268,31 @@ def test_memory_proposal_embedding_failure_does_not_persist(db):
     with pytest.raises(TimeoutError):
         guard.propose_memory(proposal())
     assert db.query(Memory).count() == 0
+
+
+@pytest.mark.parametrize(
+    ("outcome", "reason"),
+    [
+        (True, "semantic_review_flagged"),
+        ("error", "semantic_review_unavailable"),
+    ],
+)
+def test_semantic_memory_review_never_grants_trust_or_fails_open(db, outcome, reason):
+    class Reviewer:
+        def is_suspicious(self, _proposal):
+            if outcome == "error":
+                raise TimeoutError("review unavailable")
+            return outcome
+
+    guard = MemoryGuard(
+        db,
+        lambda *_: {"source_type": "internal", "trust_level": "verified"},
+        FixedEmbedder(),
+        Reviewer(),
+    )
+    result = guard.propose_memory(proposal())
+    assert result.status == "quarantined"
+    assert result.reason == reason
 
 
 def test_gateway_rejects_unverifiable_retrieved_memory(db):

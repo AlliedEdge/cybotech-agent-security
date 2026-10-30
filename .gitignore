@@ -45,6 +45,7 @@ ENV/
 .env/
 .uv/
 uv.lock
+!backend/uv.lock
 *.egg-info/
 dist/
 build/
@@ -204,3 +205,6 @@ evaluation/reports/generated/
 # -----------------------------------------------------------------------------
 compose.override.yaml
 docker-compose.override.yml
+
+# Local persistent demonstration data
+.local/
