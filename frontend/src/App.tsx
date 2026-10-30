@@ -1,62 +1,48 @@
-/**
- * Cybotech — Root application component.
- *
- * Sets up:
- * - TanStack Query provider (for API data fetching)
- * - React Router (for navigation between dashboard views)
- * - Application shell
- *
- * Status: foundation scaffold.
- * Actual routing and feature views are planned for Week 5.
- */
+import { useEffect, useState } from "react";
+import { QueryClient, QueryClientProvider, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-
-// QueryClient with sensible defaults for a security dashboard:
-// - No automatic background refetching (explicit refresh only)
-// - Retry failed requests once before surfacing an error
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 30_000,       // 30s — data stays fresh
-      retry: 1,
-      refetchOnWindowFocus: false,
-    },
-  },
-});
+type EventRow = { id: string; type: string; timestamp: string | null; actor: string; object_id?: string; correlation_id?: string; outcome?: string; reason_code?: string; payload?: Record<string, unknown> };
+type MemoryRow = { id: string; content: string; category: string; status: string; source_type: string; source_id: string; provenance: Record<string, unknown>; created_at: string | null; reason: string };
+type Page<T> = { items: T[]; limit: number; offset: number; total: number };
+type Summary = { memory_counts: Record<string, number>; event_total: number; event_counts: {type: string; outcome: string | null; count: number}[] };
+const base = import.meta.env.VITE_API_BASE_URL ?? "";
+async function get<T>(path: string): Promise<T> { const r = await fetch(`${base}/api/v1/${path}`); if (!r.ok) throw new Error(`API returned ${r.status}`); return r.json() as Promise<T>; }
 
 export default function App() {
-  return (
-    <QueryClientProvider client={queryClient}>
-      <AppShell />
-    </QueryClientProvider>
-  );
+  const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { staleTime: 15_000, retry: 1, refetchOnWindowFocus: false } } }));
+  return <QueryClientProvider client={queryClient}><Dashboard /></QueryClientProvider>;
 }
 
-/**
- * AppShell renders the top-level layout.
- *
- * Planned for Week 5:
- * - Replace with BrowserRouter + route definitions
- * - Add layout shell with sidebar navigation
- * - Wire up feature views (Overview, Memories, Attacks, Audit, Evaluations)
- */
-function AppShell() {
-  return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-      <div className="text-center max-w-lg px-6">
-        <h1 className="text-3xl font-bold text-gray-900 mb-2">Cybotech</h1>
-        <p className="text-gray-500 mb-1">Agent Memory Security &amp; Red-Team Platform</p>
-        <p className="text-sm text-gray-400 mb-6">Detect. Defend. Verify.</p>
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-100 text-amber-700 text-xs font-medium">
-          <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-          Architecture &amp; foundation — implementation in progress
-        </div>
-        <p className="mt-6 text-xs text-gray-400">
-          Dashboard UI is planned for Week 5. Backend API is available at{" "}
-          <code className="font-mono">/api/v1/health</code>.
-        </p>
-      </div>
-    </div>
-  );
+function Dashboard() {
+  const [page, setPage] = useState("Overview");
+  const [streamState, setStreamState] = useState("connecting");
+  const cache = useQueryClient();
+  const events = useInfiniteQuery({ queryKey: ["events"], initialPageParam: 0, queryFn: ({pageParam}) => get<Page<EventRow>>(`security-events?limit=100&offset=${pageParam}`), getNextPageParam: last => last.offset + last.limit < last.total ? last.offset + last.limit : undefined });
+  const memories = useInfiniteQuery({ queryKey: ["memories"], initialPageParam: 0, queryFn: ({pageParam}) => get<Page<MemoryRow>>(`memories?limit=100&offset=${pageParam}`), getNextPageParam: last => last.offset + last.limit < last.total ? last.offset + last.limit : undefined });
+  const summary = useQuery({ queryKey: ["dashboard-summary"], queryFn: () => get<Summary>("dashboard/summary") });
+  useEffect(() => {
+    const stream = new EventSource(`${base}/api/v1/events/stream`); const seen = new Set<string>();
+    stream.onopen = () => setStreamState("connected");
+    stream.onerror = () => setStreamState("reconnecting");
+    const update = (event: MessageEvent) => { if (!event.lastEventId || seen.has(event.lastEventId)) return; seen.add(event.lastEventId); if (seen.size > 300) seen.delete(seen.values().next().value as string); void cache.invalidateQueries({ queryKey: ["events"] }); void cache.invalidateQueries({ queryKey: ["memories"] }); };
+    ["memory_guard_decision", "memory_lifecycle_transition", "action_proposed", "sentinel_finding", "gateway_decision", "gateway_authorized", "gateway_denied", "approval_requested", "approval_decision", "tool_execution_completed"].forEach(type => stream.addEventListener(type, update));
+    return () => { stream.close(); setStreamState("disconnected"); };
+  }, [cache]);
+  const nav = ["Overview", "Memories", "Tool calls", "Audit history"];
+  const e = events.data?.pages.flatMap(x => x.items) ?? []; const m = memories.data?.pages.flatMap(x => x.items) ?? [];
+  const counts = summary.data?.memory_counts ?? {};
+  const eventTotal = events.data?.pages[0]?.total ?? 0;
+  return <div className="min-h-screen bg-slate-950 text-slate-100 md:flex"><aside className="w-full border-b border-slate-800 p-5 md:min-h-screen md:w-60 md:border-b-0 md:border-r"><h1 className="text-xl font-bold">CYBOTECH</h1><p className="mb-8 mt-1 text-xs text-slate-400">Agent security console</p><nav aria-label="Main navigation" className="flex gap-2 overflow-auto md:flex-col">{nav.map(x => <button key={x} onClick={() => setPage(x)} aria-current={page === x ? "page" : undefined} className={`rounded-lg px-3 py-2 text-left text-sm ${page === x ? "bg-cyan-400/15 text-cyan-200" : "text-slate-400 hover:bg-slate-900"}`}>{x}</button>)}</nav></aside>
+    <main className="min-w-0 flex-1 p-5 md:p-9"><header className="mb-7 flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs uppercase tracking-[.2em] text-cyan-300">Security observability</p><h2 className="mt-1 text-3xl font-semibold">{page}</h2></div><div className="flex gap-2"><span className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-400">SSE {streamState}</span><span className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-400">Synthetic environment</span></div></header>
+    {(events.isError || memories.isError) && <div role="alert" className="mb-5 rounded-lg border border-rose-800 bg-rose-950/50 p-3 text-sm text-rose-200">Could not load persisted security data. Check the API and database, then refresh.</div>}{(events.isLoading || memories.isLoading) && <p role="status" className="mb-5 text-sm text-slate-400">Loading persisted security data…</p>}
+    {page === "Overview" && <><section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{["trusted", "pending", "quarantined", "revoked", "rejected", "expired"].map(name => <article key={name} className="rounded-xl border border-slate-800 bg-slate-900/70 p-4"><p className="text-xs uppercase text-slate-400">{name} memories</p><p className="mt-2 text-3xl font-semibold">{counts[name] ?? 0}</p></article>)}<article className="rounded-xl border border-slate-800 bg-slate-900/70 p-4"><p className="text-xs uppercase text-slate-400">Audit events</p><p className="mt-2 text-3xl">{summary.data?.event_total ?? 0}</p></article><article className="rounded-xl border border-slate-800 bg-slate-900/70 p-4"><p className="text-xs uppercase text-slate-400">Policy denials</p><p className="mt-2 text-3xl">{summary.data?.event_counts?.filter(x => x.type === "gateway_decision" && x.outcome === "denied").reduce((sum, x) => sum + x.count, 0) ?? 0}</p></article></section><EventTable rows={e.slice(0, 12)} title="Recent security events" /></>}
+    {page === "Memories" && <><MemoryTable rows={m} onChanged={() => void cache.invalidateQueries({ queryKey: ["memories"] })} />{memories.hasNextPage && <button className="mt-4 rounded border border-slate-700 px-3 py-2 text-sm" disabled={memories.isFetchingNextPage} onClick={() => void memories.fetchNextPage()}>{memories.isFetchingNextPage ? "Loading…" : "Load more memories"}</button>}</>}{page === "Audit history" && <><EventTable rows={e} title={`Persisted audit history (${e.length} of ${eventTotal})`} />{events.hasNextPage && <button className="mt-4 rounded border border-slate-700 px-3 py-2 text-sm" disabled={events.isFetchingNextPage} onClick={() => void events.fetchNextPage()}>{events.isFetchingNextPage ? "Loading…" : "Load more events"}</button>}</>}{page === "Tool calls" && <><p className="mb-4 text-sm text-slate-400">Action events show proposals, reviewer findings, gateway outcomes, approval decisions, and execution results when those records exist. Older runs may have partial event data.</p><EventTable rows={e.filter(x => ["action_proposed", "sentinel_finding", "gateway_authorized", "gateway_denied", "gateway_decision", "approval_requested", "approval_decision", "tool_execution_completed"].includes(x.type))} title="Action review timeline" />{events.hasNextPage && <button className="mt-4 rounded border border-slate-700 px-3 py-2 text-sm" disabled={events.isFetchingNextPage} onClick={() => void events.fetchNextPage()}>{events.isFetchingNextPage ? "Loading…" : "Load more events"}</button>}</>}</main></div>;
+}
+
+function EventTable({ rows, title }: { rows: EventRow[]; title: string }) { return <section className="mt-7 overflow-hidden rounded-xl border border-slate-800 bg-slate-900/50"><div className="border-b border-slate-800 px-4 py-3"><h3 className="font-medium">{title}</h3></div>{!rows.length ? <p className="p-5 text-sm text-slate-500">No persisted events yet.</p> : <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr>{["Time", "Event", "Outcome", "Reason", "Run / Object", "Details"].map(x => <th key={x} className="px-4 py-3">{x}</th>)}</tr></thead><tbody>{rows.map(x => <tr key={x.id} className="border-t border-slate-800/80"><td className="whitespace-nowrap px-4 py-3 text-slate-400">{x.timestamp ? new Date(x.timestamp).toLocaleString() : "—"}</td><td className="px-4 py-3">{x.type}</td><td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-xs ${["denied", "quarantined"].includes(x.outcome ?? "") ? "bg-rose-400/10 text-rose-300" : "bg-cyan-400/10 text-cyan-200"}`}>{x.outcome ?? "recorded"}</span></td><td className="px-4 py-3 text-slate-400">{x.reason_code ?? "—"}</td><td className="max-w-44 px-4 py-3 font-mono text-xs text-slate-500">{x.correlation_id ?? "—"}<br />{x.object_id ?? "—"}</td><td className="max-w-xl whitespace-normal px-4 py-3 text-xs text-slate-400">{x.payload ? JSON.stringify(x.payload) : "No event details recorded"}</td></tr>)}</tbody></table></div>}</section>; }
+
+function MemoryTable({ rows, onChanged }: { rows: MemoryRow[]; onChanged: () => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const act = async (memory: MemoryRow, action: "approve" | "reject" | "revoke") => { if (!window.confirm(`${action[0].toUpperCase()}${action.slice(1)} this memory? This decision will be recorded.`)) return; setBusy(memory.id); try { const body = action === "revoke" ? { reviewer: "local_demo_reviewer" } : { approved: action === "approve", reviewer: "local_demo_reviewer" }; const r = await fetch(`${base}/api/v1/memories/${memory.id}/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); if (!r.ok) throw new Error(); onChanged(); } catch { window.alert("The memory action failed. The backend did not confirm a state change."); } finally { setBusy(null); } };
+  return <section className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/50"><div className="border-b border-slate-800 px-4 py-3"><h3 className="font-medium">Memory inspection</h3></div>{!rows.length ? <p className="p-5 text-sm text-slate-500">No persisted memories yet.</p> : <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead className="text-xs uppercase text-slate-500"><tr>{["Memory", "State", "Source", "Decision", "Review"].map(x => <th key={x} className="px-4 py-3">{x}</th>)}</tr></thead><tbody>{rows.map(x => <tr key={x.id} className="border-t border-slate-800"><td className="max-w-lg px-4 py-3"><p className="line-clamp-2">{x.content}</p><p className="mt-1 text-xs text-slate-500">{x.category} · {x.created_at ? new Date(x.created_at).toLocaleString() : "—"}</p></td><td className="px-4 py-3"><span className="rounded-full bg-slate-800 px-2 py-1 text-xs">{x.status}</span></td><td className="max-w-xs px-4 py-3 text-xs text-slate-400">{x.source_type}: {x.source_id}<p className="mt-1">Trust: {String(x.provenance?.trust_level ?? "unverified")}</p><p className="mt-1 break-all">{JSON.stringify(x.provenance ?? {})}</p></td><td className="px-4 py-3 text-xs text-slate-400">{x.reason}</td><td className="whitespace-nowrap px-4 py-3">{["pending", "quarantined"].includes(x.status) && <><button disabled={!!busy} onClick={() => void act(x, "approve")} className="mr-2 text-cyan-300 disabled:opacity-40">Approve</button><button disabled={!!busy} onClick={() => void act(x, "reject")} className="text-rose-300 disabled:opacity-40">Reject</button></>}{x.status === "trusted" && <button disabled={!!busy} onClick={() => void act(x, "revoke")} className="text-rose-300 disabled:opacity-40">Revoke</button>}</td></tr>)}</tbody></table></div>}</section>;
 }

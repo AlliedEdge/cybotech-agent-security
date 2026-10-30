@@ -52,7 +52,12 @@ class Assistant:
         self.max_steps = max_steps
 
     def run(
-        self, task: str, session_id: str, task_id: str, documents: list[Document]
+        self,
+        task: str,
+        session_id: str,
+        task_id: str,
+        documents: list[Document],
+        approval_id: str | None = None,
     ) -> TaskResult:
         """Failures abort the task; no provider/service error enables a bypass."""
         observations: list[str] = []
@@ -105,15 +110,27 @@ class Assistant:
                         task_id=task_id,
                         user_task_description=task,
                         retrieved_memory_ids=[m.id for m in memories],
+                        approval_id=approval_id,
                     )
-                    self.events.emit("action_proposed", {"tool_name": action.tool_name})
+                    action_id = self._action_id(action)
+                    self.events.emit(
+                        "action_proposed",
+                        {
+                            "action_id": action_id,
+                            "task_id": task_id,
+                            "tool_name": action.tool_name,
+                            "arguments": action.arguments,
+                        },
+                    )
                     review_available = True
                     try:
                         finding = self.sentinel.review(action)
                     except Exception:
                         review_available = False
                         finding = {"recommendation": "UNAVAILABLE"}
-                    self.events.emit("sentinel_finding", finding)
+                    self.events.emit(
+                        "sentinel_finding", {"action_id": action_id, "finding": finding}
+                    )
                     # Always invoke independent authorization, including on reviewer failure.
                     decision = self.gateway.authorize(action)
                     if not review_available:
@@ -124,7 +141,15 @@ class Assistant:
                         )
                     self.events.emit(
                         "gateway_authorized" if decision.authorized else "gateway_denied",
-                        {"tool_name": action.tool_name, "failed_check": decision.failed_check},
+                        {
+                            "action_id": action_id,
+                            "task_id": task_id,
+                            "tool_name": action.tool_name,
+                            "approved": decision.authorized,
+                            "approval_id": decision.approval_id,
+                            "reason": decision.reason,
+                            "failed_check": decision.failed_check,
+                        },
                     )
                     if not decision.authorized:
                         observations.append(f"Action denied: {decision.failed_check}")
@@ -135,7 +160,12 @@ class Assistant:
                         "tool_execution_completed",
                         {
                             "tool_name": result.tool_name,
+                            "action_id": action_id,
+                            "task_id": task_id,
                             "success": result.success,
+                            "arguments": result.arguments,
+                            "result": result.result,
+                            "error": result.error,
                         },
                     )
                     observations.append(result.model_dump_json())
@@ -172,3 +202,9 @@ class Assistant:
             return TaskResult(
                 status="failed", reply="Task failed safely", steps=step, tool_results=results
             )
+
+    @staticmethod
+    def _action_id(action: ActionProposal) -> str:
+        from cybotech.services.policy_gateway.service import PolicyGateway
+
+        return PolicyGateway.action_hash(action)

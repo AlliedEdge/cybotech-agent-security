@@ -12,6 +12,8 @@ from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
+from cybotech.infrastructure.database.models import Base
+from cybotech.infrastructure.database.session import database_url
 
 # ---------------------------------------------------------------------------
 # Alembic Config object
@@ -29,7 +31,7 @@ if config.config_file_name is not None:
 # ---------------------------------------------------------------------------
 # from cybotech.infrastructure.database.base import Base
 # target_metadata = Base.metadata
-target_metadata = None  # replace with Base.metadata in Week 1
+target_metadata = Base.metadata
 
 
 # ---------------------------------------------------------------------------
@@ -37,12 +39,7 @@ target_metadata = None  # replace with Base.metadata in Week 1
 # ---------------------------------------------------------------------------
 def get_database_url() -> str:
     """Build the database URL from environment variables."""
-    host     = os.environ.get("POSTGRES_HOST", "localhost")
-    port     = os.environ.get("POSTGRES_PORT", "5432")
-    db       = os.environ.get("POSTGRES_DB", "cybotech")
-    user     = os.environ.get("POSTGRES_USER", "cybotech_user")
-    password = os.environ.get("POSTGRES_PASSWORD", "")
-    return f"postgresql+psycopg://{user}:{password}@{host}:{port}/{db}"
+    return database_url()
 
 
 # ---------------------------------------------------------------------------

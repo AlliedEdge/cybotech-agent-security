@@ -50,6 +50,7 @@ services:
     restart: unless-stopped
     environment:
       APP_ENV:              ${APP_ENV:-development}
+      CYBOTECH_SECURITY_MODE: local_demo
       APP_SECRET_KEY:       ${APP_SECRET_KEY:?APP_SECRET_KEY must be set in .env}
       LOG_LEVEL:            ${LOG_LEVEL:-INFO}
       POSTGRES_HOST:        db
@@ -57,7 +58,7 @@ services:
       POSTGRES_DB:          ${POSTGRES_DB:-cybotech}
       POSTGRES_USER:        ${POSTGRES_USER:-cybotech_user}
       POSTGRES_PASSWORD:    ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
-      OPENAI_API_KEY:       ${OPENAI_API_KEY:?OPENAI_API_KEY must be set in .env}
+      OPENAI_API_KEY:       ${OPENAI_API_KEY:-}
       OPENAI_MODEL:         ${OPENAI_MODEL:-gpt-4o-mini}
       OPENAI_BASE_URL:      ${OPENAI_BASE_URL:-https://api.openai.com/v1}
       ALLOWED_EMAIL_DESTINATIONS: ${ALLOWED_EMAIL_DESTINATIONS:-reports@internal.example,support@internal.example}
@@ -87,12 +88,12 @@ services:
   # ---------------------------------------------------------------------------
   frontend:
     build:
-      context: ./frontend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: frontend/Dockerfile
     restart: unless-stopped
     environment:
       VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
-      VITE_SSE_URL:      ${VITE_SSE_URL:-http://localhost:8000/api/v1/events}
+      VITE_SSE_URL:      ${VITE_SSE_URL:-http://localhost:8000/api/v1/events/stream}
     ports:
       - "127.0.0.1:5173:5173"
     depends_on:

@@ -18,7 +18,8 @@ WORKDIR /app
 # ---------------------------------------------------------------------------
 FROM base AS deps
 
-COPY package.json pnpm-lock.yaml* ./
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY frontend/package.json ./frontend/package.json
 
 # Install all dependencies (including devDeps for the dev server)
 RUN pnpm install --frozen-lockfile
@@ -28,13 +29,14 @@ RUN pnpm install --frozen-lockfile
 # ---------------------------------------------------------------------------
 FROM base AS dev
 
-WORKDIR /app
+WORKDIR /app/frontend
 
 # Copy installed modules from deps stage
-COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/node_modules /app/node_modules
+COPY --from=deps /app/frontend/node_modules ./node_modules
 
 # Copy source (hot-reloaded from the volume mount in compose.yaml dev workflow)
-COPY . .
+COPY frontend/ ./
 
 EXPOSE 5173
 

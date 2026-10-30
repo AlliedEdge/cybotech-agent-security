@@ -8,7 +8,7 @@ name            = "cybotech"
 version         = "0.1.0"
 description     = "Cybotech Agent Memory Security & Red-Team Platform — backend"
 readme          = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.15"
 
 dependencies = [
     # Web framework
@@ -48,8 +48,6 @@ dev = [
     "ruff>=0.7.4",
     "mypy>=1.13.0",
 
-    # Type stubs
-    "types-python-dotenv>=1.0.0",
 ]
 
 [build-system]
