@@ -16,7 +16,7 @@ Cybotech is a practical AI agent security engineering project that demonstrates 
 
 The project builds a fictional company's customer-support assistant, attacks it with controlled synthetic inputs, instruments the defenses, and measures outcomes. Every design decision is grounded in engineering evidence, not claims.
 
-**Current status:** Architecture and repository foundation. Application code is not yet implemented. Commands labelled `[planned]` require future implementation.
+**Current status:** A local synthetic demonstration is implemented, including the assistant, memory review, action approvals, and attack lab. See [running and limitations](docs/completion.md) for current setup and evidence. The detailed architecture and roadmap below describe the original design and may contain planned or historical details.
 
 > ⚠️ This project is under active development. It is not a production-ready security product. It does not claim universal protection against prompt injection.
 
