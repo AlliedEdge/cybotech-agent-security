@@ -36,10 +36,11 @@ class LocalAssistantModel:
             else []
         )
         text = "\n".join(doc.content[:600] for doc in context.documents[:5])
+        evidence = "\n".join(item.content[:600] for item in context.retrieved_documents[:5])
         remembered = "\n".join(memory.content[:600] for memory in context.memories)
         return AgentTurn(
             reply="Offline extractive assistant (no live model).\n"
-            + (text or remembered or "Provide a synthetic document to summarize."),
+            + (text or evidence or remembered or "Provide a synthetic document to summarize."),
             memories=memories,
             actions=[],
             done=True,

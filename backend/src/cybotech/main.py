@@ -51,6 +51,12 @@ def _register_routers(application: FastAPI) -> None:
     from cybotech.api.v1.security import router as security_router
 
     application.include_router(security_router, prefix="/api/v1")
+    from cybotech.api.v1.documents import router as documents_router
+
+    application.include_router(documents_router, prefix="/api/v1")
+    from cybotech.api.v1.evaluations import router as evaluations_router
+
+    application.include_router(evaluations_router, prefix="/api/v1")
 
 
 # ---------------------------------------------------------------------------

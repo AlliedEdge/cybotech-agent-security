@@ -97,3 +97,41 @@ class MemoryProvenance(Base):
     source_id: Mapped[str] = mapped_column(String(200), nullable=False)
     trust_context: Mapped[str] = mapped_column(String(40), nullable=False)
     details: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class DocumentRecord(Base):
+    __tablename__ = "documents"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    document_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    source_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    session_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="ready")
+    deleted_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class DocumentChunk(Base):
+    __tablename__ = "document_chunks"
+    __table_args__ = (
+        Index("ix_document_chunks_document_ordinal", "document_id", "ordinal", unique=True),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
+    ordinal: Mapped[int] = mapped_column(nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    source_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    trust_label: Mapped[str] = mapped_column(String(20), nullable=False, default="untrusted")
+    embedding: Mapped[Any] = mapped_column(Vector(384).with_variant(JSON, "sqlite"), nullable=False)
+    embedding_model: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

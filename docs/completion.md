@@ -2,6 +2,32 @@
 
 This project is a research demo using synthetic data and simulated tools, not a production security product. By default, the assistant is deterministic and extractive; Sentinel and Memory Guard use deterministic rules. Scripted lab results measure the controls against a deliberately compliant model double, not the robustness of an actual LLM. Lab runs use an isolated SQLite database per case and persist results and traces to the application audit store.
 
+## Reproducible Phase 5 demonstration
+
+From the repository root, use an explicit disposable SQLite file and local-demo access:
+
+```bash
+export DATABASE_URL='sqlite:///./cybotech-demo.db'
+export CYBOTECH_SECURITY_MODE=local_demo
+make demo
+```
+
+The target runs one versioned synthetic attack and one benign control through both the
+isolated `baseline` and `full` profiles, then evaluates the persisted audit records. It
+never makes a live-model call, sends real email, or uses non-synthetic data. The results
+are exploratory; latency overhead stays unavailable until at least five matched pairs exist.
+
+In separate terminals, start `cd backend && DATABASE_URL="$DATABASE_URL" CYBOTECH_SECURITY_MODE=local_demo uv run uvicorn cybotech.main:app --reload` and `cd frontend && pnpm dev`.
+The workbench shows persisted metrics in **Overview**, controlled-comparison status in
+**Evaluations**, case evidence in **Attack Explorer**, and bounded scripted runs in
+**Experiment Control**. Local-demo access is loopback-only and is not production authentication.
+
+Live provider use is optional and unverified here. It requires explicit
+`CYBOTECH_MODEL_MODE=live`, an environment-supplied `OPENAI_API_KEY`, and a maximum of
+three synthetic cases. Ordinary tests and `make demo` stay offline. Do not put keys in UI,
+source, or logs. For disposable PostgreSQL/pgvector verification, follow `backend/README.md`;
+never target shared or production data.
+
 ## Start without API credits
 
 Install Python 3.12–3.14, Node 20+ and uv. From `backend`, run `uv sync --frozen --extra dev` and `uv run python -m cybotech.local`. From `frontend`, install dependencies and run `npm run dev`. Open http://localhost:5173. The backend creates local SQLite data under `backend/.local/` and listens on loopback only. For PostgreSQL/pgvector, use Docker Compose after copying `.env.example` to `.env` and setting the required local passwords. Compose builds from the locked dependencies and runs Alembic migrations. Docker Desktop bridge addresses vary; configure `CYBOTECH_LOCAL_PROXY_HOSTS` only for the local bridge if necessary.
