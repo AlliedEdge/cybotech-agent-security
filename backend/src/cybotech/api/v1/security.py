@@ -15,14 +15,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
-from cybotech.agents.assistant import Assistant
 from cybotech.agents.contracts import ActionProposal, Document, MemoryProposal
+from cybotech.agents.graph import PrimaryAssistantGraph
 from cybotech.infrastructure.database.models import AuditEvent, Memory, MemoryStatus, PolicyDecision
 from cybotech.infrastructure.database.session import get_db
 from cybotech.infrastructure.llm.offline import LocalAssistantModel, LocalEmbedder
 from cybotech.infrastructure.llm.providers import OpenAIProvider
 from cybotech.infrastructure.sandbox.tools import SandboxDispatcher
-from cybotech.services.integration.ports import Reviewer, build_persistent_assistant
+from cybotech.services.integration.ports import Reviewer, build_persistent_graph
 from cybotech.services.integration.sources import registered_sources, resolve_registered_source
 from cybotech.services.memory_guard.model import ModelMemoryReviewer
 from cybotech.services.memory_guard.service import MemoryGuard, MemoryReviewer
@@ -390,8 +390,10 @@ def runtime_configuration() -> dict[str, str]:
     return {"mode": runtime_mode(), "reviewer": reviewer, "tools": "simulated"}
 
 
-def create_runtime_assistant(db: Session, documents: list[Document], task_id: str) -> Assistant:
-    return build_persistent_assistant(
+def create_runtime_graph(
+    db: Session, documents: list[Document], task_id: str
+) -> PrimaryAssistantGraph:
+    return build_persistent_graph(
         db,
         OpenAIProvider(runtime_client(), os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
         if runtime_mode() == "live"
@@ -407,8 +409,8 @@ def create_runtime_assistant(db: Session, documents: list[Document], task_id: st
 
 @router.post("/assistant/run")
 def run_assistant(body: AssistantRunIn, db: DbSession) -> dict[str, Any]:
-    assistant = create_runtime_assistant(db, body.documents, body.task_id)
-    result = assistant.run(
+    graph = create_runtime_graph(db, body.documents, body.task_id)
+    result = graph.run(
         body.task,
         body.session_id,
         body.task_id,

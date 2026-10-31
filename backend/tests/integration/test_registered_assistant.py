@@ -6,6 +6,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from cybotech.agents.assistant import Assistant
 from cybotech.agents.contracts import AgentTurn, ModelAction
 from cybotech.infrastructure.database.models import AuditEvent, Base
 from cybotech.infrastructure.database.session import get_db
@@ -257,3 +258,26 @@ def test_audit_commit_failure_fails_closed_before_tool_execution(
         event.remove(Session, "before_commit", fail_gateway_audit)
     assert response.status_code == 500
     assert calls == 0
+
+
+def test_registered_endpoint_uses_langgraph_not_legacy_assistant(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production endpoint must execute the compiled graph, not Assistant.run."""
+    monkeypatch.setenv("CYBOTECH_MODEL_MODE", "offline")
+
+    def legacy_path_used(*_args, **_kwargs):
+        raise AssertionError("registered endpoint invoked the legacy Assistant.run path")
+
+    monkeypatch.setattr(Assistant, "run", legacy_path_used)
+    response = client.post(
+        "/api/v1/assistant/run",
+        json={
+            "task": "Summarize the synthetic task",
+            "session_id": "graph-session",
+            "task_id": "graph-task",
+            "documents": [],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"

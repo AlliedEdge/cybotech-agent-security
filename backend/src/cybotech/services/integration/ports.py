@@ -11,6 +11,7 @@ from cybotech.agents.assistant import Assistant
 from cybotech.agents.contracts import (
     ActionProposal,
     Document,
+    DocumentEvidence,
     GatewayDecision,
     MemoryDecision,
     MemoryProposal,
@@ -18,8 +19,10 @@ from cybotech.agents.contracts import (
     ModelProvider,
     RetrievalQuery,
 )
+from cybotech.agents.graph import PrimaryAssistantGraph
 from cybotech.infrastructure.database.models import AuditEvent
 from cybotech.infrastructure.sandbox.tools import SandboxDispatcher
+from cybotech.services.documents.service import DocumentService
 from cybotech.services.memory_guard.service import MemoryGuard, MemoryReviewer
 from cybotech.services.policy_gateway.service import PolicyGateway
 from cybotech.services.retrieval.service import Embedder, RetrievalService
@@ -67,6 +70,14 @@ class TrustedRetrievalPort:
             )
             for row in rows
         ]
+
+
+class DocumentRetrievalAdapter:
+    def __init__(self, db: Session, embedder: Embedder) -> None:
+        self.service = DocumentService(db, embedder)
+
+    def retrieve(self, query: str, session_id: str) -> list[DocumentEvidence]:
+        return self.service.retrieve(query, session_id)
 
 
 class SentinelPortAdapter:
@@ -155,6 +166,32 @@ def build_persistent_assistant(
         sentinel=ports.sentinel,
         gateway=ports.gateway,
         dispatcher=dispatcher,
+        events=ports.events,
+    )
+
+
+def build_persistent_graph(
+    db: Session,
+    model: ModelProvider,
+    embedder: Embedder,
+    documents: list[Document],
+    source_resolver: SourceResolver,
+    correlation_id: str,
+    reviewer: Reviewer | None = None,
+    memory_reviewer: MemoryReviewer | None = None,
+) -> PrimaryAssistantGraph:
+    """Build the registered assistant's LangGraph with the established security ports."""
+    ports = build_security_ports(
+        db, embedder, source_resolver, correlation_id, reviewer, memory_reviewer
+    )
+    return PrimaryAssistantGraph(
+        model=model,
+        memory=ports.memory,
+        retrieval=ports.retrieval,
+        document_retrieval=DocumentRetrievalAdapter(db, embedder),
+        sentinel=ports.sentinel,
+        gateway=ports.gateway,
+        dispatcher=SandboxDispatcher(documents),
         events=ports.events,
     )
 

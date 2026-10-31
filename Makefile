@@ -8,7 +8,7 @@
         backend-install backend-dev backend-test backend-lint backend-typecheck \
         frontend-install frontend-dev frontend-build frontend-test \
         migrate migrate-create \
-        red-team evaluate \
+        red-team evaluate demo \
         clean clean-pyc clean-node
 
 # Default target
@@ -75,7 +75,7 @@ frontend-build: ## Build the frontend for production
 	cd frontend && pnpm build
 
 frontend-test: ## Run frontend tests
-	cd frontend && pnpm test --run
+	cd frontend && pnpm exec vitest run
 
 frontend-lint: ## Lint frontend TypeScript
 	cd frontend && pnpm lint
@@ -96,13 +96,48 @@ migrate-down: ## Downgrade one migration step
 	cd backend && uv run alembic downgrade -1
 
 # -----------------------------------------------------------------------------
-# Red-team and evaluation (planned — not yet implemented)
+# Red-team and evaluation
+#
+# make red-team
+#   Runs a bounded scripted Vibe Hacker experiment (offline by default).
+#   No live-model API calls unless CYBOTECH_MODEL_MODE=live is set AND
+#   --mode live is passed explicitly via ARGS.
+#   Persists results to DATABASE_URL for later evaluation.
+#
+#   Pass extra arguments via ARGS:
+#     make red-team ARGS="--cases 10 --configurations full"
+#     make red-team ARGS="--include-benign"
+#     make red-team ARGS="--split heldout --objective memory_poisoning"
+#
+# make evaluate
+#   Reads persisted experiment records from DATABASE_URL and computes
+#   genuine security metrics.  Read-only: no experiment data is mutated.
+#
+#   Pass extra arguments via ARGS:
+#     make evaluate ARGS="--configuration full"
+#     make evaluate ARGS="--generation-mode scripted"
+#     make evaluate ARGS="--output json"
+#
+# DATABASE_URL must be set (or export it in your shell).
+# Default for local development: sqlite:///./lab.db
 # -----------------------------------------------------------------------------
-red-team: ## Run the Vibe Hacker red-team suite [PLANNED]
-	@echo "[planned] Red-team runner not yet implemented."
+ARGS ?=
 
-evaluate: ## Run the evaluation engine [PLANNED]
-	@echo "[planned] Evaluation engine not yet implemented."
+red-team: ## Run bounded scripted Vibe Hacker experiments (offline by default; persists to DATABASE_URL)
+	@[ -n "$$DATABASE_URL" ] || (echo "[red-team] DATABASE_URL not set. Using sqlite:///./lab.db"; export DATABASE_URL=sqlite:///./lab.db)
+	cd backend && DATABASE_URL=$${DATABASE_URL:-sqlite:///./lab.db} \
+		uv run python -m cybotech.cli.red_team $(ARGS)
+
+evaluate: ## Compute security metrics from persisted experiment records (read-only)
+	@[ -n "$$DATABASE_URL" ] || (echo "[evaluate] DATABASE_URL not set. Using sqlite:///./lab.db")
+	cd backend && DATABASE_URL=$${DATABASE_URL:-sqlite:///./lab.db} \
+		uv run python -m cybotech.cli.evaluate $(ARGS)
+
+demo: ## Run a bounded offline baseline/full experiment with a benign control, then evaluate it
+	cd backend && DATABASE_URL=$${DATABASE_URL:-sqlite:///./lab.db} \
+		uv run python -m cybotech.cli.red_team --cases 1 --configurations baseline,full --include-benign
+	cd backend && DATABASE_URL=$${DATABASE_URL:-sqlite:///./lab.db} \
+		uv run python -m cybotech.cli.evaluate
 
 # -----------------------------------------------------------------------------
 # Quality — run all checks

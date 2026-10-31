@@ -58,6 +58,18 @@ class MemoryRecord(Record):
     retrieved_at: datetime = Field(default_factory=utc_now)
 
 
+class DocumentEvidence(Record):
+    """Retrieved document text is untrusted evidence, never authorization."""
+
+    chunk_id: str
+    document_id: str
+    content: str
+    title: str
+    source_type: str
+    content_hash: str
+    trust_label: Literal["untrusted"] = "untrusted"
+
+
 class ActionProposal(Record):
     tool_name: str
     arguments: dict[str, Any]
@@ -110,6 +122,7 @@ class ModelContext(Record):
     user_task: str
     documents: list[Document]
     memories: list[MemoryRecord]
+    retrieved_documents: list[DocumentEvidence] = Field(default_factory=list)
     observations: list[str]
 
 
@@ -125,6 +138,10 @@ class MemoryPort(Protocol):
 
 class RetrievalPort(Protocol):
     def retrieve(self, query: RetrievalQuery) -> list[MemoryRecord]: ...
+
+
+class DocumentRetrievalPort(Protocol):
+    def retrieve(self, query: str, session_id: str) -> list[DocumentEvidence]: ...
 
 
 class SentinelPort(Protocol):
