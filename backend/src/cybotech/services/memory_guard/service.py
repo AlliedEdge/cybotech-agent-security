@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from cybotech.agents.contracts import MemoryDecision, MemoryProposal
+from cybotech.agents.registry import Operation, require_permission
 from cybotech.infrastructure.database.models import (
     AuditEvent,
     Memory,
@@ -76,7 +77,10 @@ class MemoryGuard:
         self.embedder = embedder
         self.reviewer = reviewer
 
-    def propose_memory(self, proposal: MemoryProposal) -> MemoryDecision:
+    def propose_memory(
+        self, proposal: MemoryProposal, *, model_suspicious: bool = False
+    ) -> MemoryDecision:
+        require_permission(proposal.proposed_by, Operation.PROPOSE_MEMORY)
         if (
             not proposal.content.strip()
             or not proposal.source_document_id.strip()
@@ -87,6 +91,15 @@ class MemoryGuard:
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         existing = self.db.scalar(select(Memory).where(Memory.proposal_key == key))
         if existing:
+            if model_suspicious and existing.status in {MemoryStatus.pending, MemoryStatus.trusted}:
+                target = (
+                    MemoryStatus.quarantined
+                    if existing.status == MemoryStatus.pending
+                    else MemoryStatus.revoked
+                )
+                existing = self.transition(
+                    existing.id, target, "memory_guard", "semantic_review_flagged"
+                )
             return MemoryDecision(
                 proposal_id=str(existing.id),
                 status=existing.status.value,
@@ -119,6 +132,8 @@ class MemoryGuard:
         else:
             state, reason, trust = MemoryStatus.pending, "review_required", source["trust_level"]
 
+        if state == MemoryStatus.pending and model_suspicious:
+            state, reason = MemoryStatus.quarantined, "semantic_review_flagged"
         if state == MemoryStatus.pending and self.reviewer is not None:
             try:
                 if self.reviewer.is_suspicious(proposal):

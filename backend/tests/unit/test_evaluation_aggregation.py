@@ -78,6 +78,7 @@ def _rec(
 # ComparabilityCheck
 # ---------------------------------------------------------------------------
 
+
 class TestComparabilityCheck:
     def test_identical_populations_are_comparable(self):
         baseline = [_rec(configuration="baseline", case_id="c0")]
@@ -134,6 +135,7 @@ class TestComparabilityCheck:
 # EvaluationSummary counts
 # ---------------------------------------------------------------------------
 
+
 class TestBuildEvaluationSummary:
     def test_empty_records(self):
         summary = build_evaluation_summary([])
@@ -159,8 +161,11 @@ class TestBuildEvaluationSummary:
 
     def test_benign_records_counted_separately(self):
         records = [
-            _rec(scenario_kind="benign", scenario_objective="utility",
-                 outcome=ExperimentOutcome.attack_blocked),
+            _rec(
+                scenario_kind="benign",
+                scenario_objective="utility",
+                outcome=ExperimentOutcome.attack_blocked,
+            ),
             _rec(scenario_kind="attack", outcome=ExperimentOutcome.attack_blocked),
         ]
         summary = build_evaluation_summary(records)
@@ -202,8 +207,11 @@ class TestBuildEvaluationSummary:
     def test_scripted_and_live_remain_separate_strata(self):
         records = [
             _rec(generation_mode="scripted", outcome=ExperimentOutcome.attack_blocked),
-            _rec(generation_mode="live_model", outcome=ExperimentOutcome.attack_succeeded,
-                 attack_success=True),
+            _rec(
+                generation_mode="live_model",
+                outcome=ExperimentOutcome.attack_succeeded,
+                attack_success=True,
+            ),
         ]
         summary = build_evaluation_summary(records)
         scripted_stratum = next(
@@ -217,26 +225,34 @@ class TestBuildEvaluationSummary:
 
     def test_baseline_and_full_defense_in_separate_strata(self):
         records = [
-            _rec(configuration="baseline", outcome=ExperimentOutcome.attack_succeeded,
-                 attack_success=True),
+            _rec(
+                configuration="baseline",
+                outcome=ExperimentOutcome.attack_succeeded,
+                attack_success=True,
+            ),
             _rec(configuration="full", outcome=ExperimentOutcome.attack_blocked),
         ]
         summary = build_evaluation_summary(records)
         baseline_stratum = next(
             s for s in summary.strata if s.population_label == "configuration:baseline"
         )
-        full_stratum = next(
-            s for s in summary.strata if s.population_label == "configuration:full"
-        )
+        full_stratum = next(s for s in summary.strata if s.population_label == "configuration:full")
         assert baseline_stratum.attack_success_rate.percent == 100.0
         assert full_stratum.attack_success_rate.percent == 0.0
 
     def test_different_model_configs_separate_in_pair_strata(self):
         records = [
-            _rec(configuration="full", generation_mode="scripted",
-                 outcome=ExperimentOutcome.attack_blocked),
-            _rec(configuration="full", generation_mode="live_model",
-                 outcome=ExperimentOutcome.attack_succeeded, attack_success=True),
+            _rec(
+                configuration="full",
+                generation_mode="scripted",
+                outcome=ExperimentOutcome.attack_blocked,
+            ),
+            _rec(
+                configuration="full",
+                generation_mode="live_model",
+                outcome=ExperimentOutcome.attack_succeeded,
+                attack_success=True,
+            ),
         ]
         summary = build_evaluation_summary(records)
         pair_strata = {s.population_label: s for s in summary.strata if "|" in s.population_label}
@@ -264,15 +280,32 @@ class TestBuildEvaluationSummary:
 # filter_records
 # ---------------------------------------------------------------------------
 
+
 class TestFilterRecords:
     def _population(self) -> list[ExperimentRecord]:
         return [
-            _rec(run_id="run_a", configuration="baseline", generation_mode="scripted",
-                 scenario_kind="attack", scenario_objective="memory_poisoning",
-                 corpus_version="v1", model_name="model-x", case_id="c0", scenario_id="c0"),
-            _rec(run_id="run_b", configuration="full", generation_mode="live_model",
-                 scenario_kind="benign", scenario_objective="utility",
-                 corpus_version="v2", model_name="model-y", case_id="c1", scenario_id="c1"),
+            _rec(
+                run_id="run_a",
+                configuration="baseline",
+                generation_mode="scripted",
+                scenario_kind="attack",
+                scenario_objective="memory_poisoning",
+                corpus_version="v1",
+                model_name="model-x",
+                case_id="c0",
+                scenario_id="c0",
+            ),
+            _rec(
+                run_id="run_b",
+                configuration="full",
+                generation_mode="live_model",
+                scenario_kind="benign",
+                scenario_objective="utility",
+                corpus_version="v2",
+                model_name="model-y",
+                case_id="c1",
+                scenario_id="c1",
+            ),
         ]
 
     def test_filter_by_configuration(self):
@@ -324,6 +357,7 @@ class TestFilterRecords:
 # ---------------------------------------------------------------------------
 # paginate
 # ---------------------------------------------------------------------------
+
 
 class TestPaginate:
     def _items(self, n: int) -> list[int]:

@@ -19,7 +19,7 @@ from cybotech.agents.contracts import (
     ModelProvider,
     RetrievalQuery,
 )
-from cybotech.agents.graph import PrimaryAssistantGraph
+from cybotech.agents.supervisor import SupervisorGraph
 from cybotech.infrastructure.database.models import AuditEvent
 from cybotech.infrastructure.sandbox.tools import SandboxDispatcher
 from cybotech.services.documents.service import DocumentService
@@ -48,6 +48,11 @@ class MemoryGuardPort:
     def propose_memory(self, proposal: MemoryProposal) -> MemoryDecision:
         return self.guard.propose_memory(proposal)
 
+    def propose_with_review(
+        self, proposal: MemoryProposal, model_suspicious: bool
+    ) -> MemoryDecision:
+        return self.guard.propose_memory(proposal, model_suspicious=model_suspicious)
+
 
 class TrustedRetrievalPort:
     def __init__(self, db: Session, embedder: Embedder) -> None:
@@ -58,7 +63,7 @@ class TrustedRetrievalPort:
         rows = self.service.retrieve(
             query.query_text,
             max_results=query.max_results,
-            principal="primary_assistant",
+            principal=query.principal,
             min_similarity=query.min_similarity,
         )
         return [
@@ -91,18 +96,32 @@ class SentinelPortAdapter:
         self.findings[PolicyGateway.action_hash(proposal)] = data
         return data
 
+    def review_with_context(
+        self, proposal: ActionProposal, evidence: list[DocumentEvidence]
+    ) -> dict[str, Any]:
+        method = getattr(self.reviewer, "review_with_context", None)
+        finding = method(proposal, evidence) if method else self.reviewer.review(proposal)
+        data = finding.model_dump()
+        self.findings[PolicyGateway.action_hash(proposal)] = data
+        return data
+
 
 class PolicyGatewayPort:
     def __init__(self, db: Session, sentinel: SentinelPortAdapter) -> None:
         self.gateway = PolicyGateway(db)
         self.sentinel = sentinel
 
-    def authorize(self, proposal: ActionProposal) -> GatewayDecision:
-        data = self.sentinel.findings.pop(PolicyGateway.action_hash(proposal), None)
-        try:
-            finding = SentinelFinding.model_validate(data) if data is not None else None
-        except Exception:
-            finding = None
+    def authorize(
+        self, proposal: ActionProposal, *, sentinel_finding: SentinelFinding | None = None
+    ) -> GatewayDecision:
+        if sentinel_finding is None:
+            data = self.sentinel.findings.pop(PolicyGateway.action_hash(proposal), None)
+            try:
+                finding = SentinelFinding.model_validate(data) if data is not None else None
+            except Exception:
+                finding = None
+        else:
+            finding = sentinel_finding
         return self.gateway.authorize(
             proposal, sentinel_finding=finding, approval_id=proposal.approval_id
         )
@@ -119,7 +138,7 @@ class PersistentEventPort:
             AuditEvent(
                 event_id=f"evt_{uuid.uuid4().hex}",
                 event_type=event_type,
-                actor="primary_assistant",
+                actor="supervisor" if event_type == "agent_handoff" else "primary_assistant",
                 correlation_id=self.correlation_id,
                 object_id=str(payload.get("memory_id") or payload.get("action_id") or "") or None,
                 outcome=(
@@ -179,12 +198,10 @@ def build_persistent_graph(
     correlation_id: str,
     reviewer: Reviewer | None = None,
     memory_reviewer: MemoryReviewer | None = None,
-) -> PrimaryAssistantGraph:
+) -> SupervisorGraph:
     """Build the registered assistant's LangGraph with the established security ports."""
-    ports = build_security_ports(
-        db, embedder, source_resolver, correlation_id, reviewer, memory_reviewer
-    )
-    return PrimaryAssistantGraph(
+    ports = build_security_ports(db, embedder, source_resolver, correlation_id, reviewer, None)
+    return SupervisorGraph(
         model=model,
         memory=ports.memory,
         retrieval=ports.retrieval,
@@ -193,6 +210,8 @@ def build_persistent_graph(
         gateway=ports.gateway,
         dispatcher=SandboxDispatcher(documents),
         events=ports.events,
+        memory_review_agent=memory_reviewer,
+        source_resolver=source_resolver,
     )
 
 

@@ -55,7 +55,9 @@ class DemoServices:
     def review(self, proposal: ActionProposal) -> dict[str, Any]:
         return {"recommendation": "PROCEED", "demo_only": True}
 
-    def authorize(self, proposal: ActionProposal) -> GatewayDecision:
+    def authorize(
+        self, proposal: ActionProposal, *, sentinel_finding: object | None = None
+    ) -> GatewayDecision:
         allowed = not self.protected or proposal.arguments.get("destination") == (
             "reports@internal.example"
         )

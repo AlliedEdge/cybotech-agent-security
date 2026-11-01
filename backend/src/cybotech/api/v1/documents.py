@@ -67,7 +67,7 @@ def ingest(body: IngestIn, db: DbSession) -> dict[str, Any]:
     return _document(row)
 
 
-@router.get("/documents")
+@router.get("/documents/ingested")
 def list_documents(session_id: str, db: DbSession) -> dict[str, Any]:
     rows = db.scalars(
         select(DocumentRecord).where(

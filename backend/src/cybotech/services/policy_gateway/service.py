@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from cybotech.agents.contracts import ActionProposal, GatewayDecision
+from cybotech.agents.registry import Operation, require_permission
 from cybotech.infrastructure.database.models import AuditEvent, PolicyDecision
 from cybotech.services.sentinel.service import SentinelFinding
 
@@ -118,6 +119,10 @@ class PolicyGateway:
             return "unknown_tool"
         if p.proposed_by not in self.principals:
             return "principal_not_allowed"
+        try:
+            require_permission(p.proposed_by, Operation.PROPOSE_ACTION)
+        except PermissionError:
+            return "principal_not_allowed"
         for memory_id in p.retrieved_memory_ids:
             try:
                 memory_uuid = uuid.UUID(memory_id)
@@ -148,6 +153,16 @@ class PolicyGateway:
             finding is None or getattr(finding, "status", None) != "completed"
         ):
             return "sentinel_review_required"
+        if finding is not None and finding.disposition not in {
+            "flag_for_denial",
+            "additional_review",
+            "gateway_evaluation",
+        }:
+            return "sentinel_finding_invalid"
+        if finding is not None and finding.risk not in {"low", "medium", "high"}:
+            return "sentinel_finding_invalid"
+        if finding is not None and finding.risk != "low":
+            return "sentinel_flagged_action"
         if finding and finding.disposition in {"flag_for_denial", "additional_review"}:
             return "sentinel_flagged_action"
         if p.tool_name == "send_report":

@@ -8,6 +8,7 @@ from openai import OpenAI
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from cybotech.agents.registry import Operation, require_permission
 from cybotech.infrastructure.database.models import Memory, MemoryStatus
 
 
@@ -41,8 +42,7 @@ class RetrievalService:
         principal: str = "primary_assistant",
         min_similarity: float = 0.0,
     ) -> list[Memory]:
-        if principal != "primary_assistant":
-            raise PermissionError("retrieval principal not permitted")
+        require_permission(principal, Operation.RETRIEVE_MEMORY)
         if not 1 <= max_results <= 100 or not 0 <= min_similarity <= 1:
             raise ValueError("invalid retrieval bounds")
         if not query.strip():

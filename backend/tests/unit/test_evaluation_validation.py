@@ -57,6 +57,7 @@ def _validate(payload: dict, **overrides):
 # Valid path
 # ---------------------------------------------------------------------------
 
+
 class TestValidPayload:
     def test_valid_attack_blocked_classifies_correctly(self):
         record, outcome = _validate(_VALID_ATTACK_PAYLOAD)
@@ -121,6 +122,7 @@ class TestValidPayload:
 # Failed experiments
 # ---------------------------------------------------------------------------
 
+
 class TestFailedExperiments:
     def test_error_status_classifies_as_failed(self):
         payload = {**_VALID_ATTACK_PAYLOAD, "status": "error", "errors": ["completed"]}
@@ -138,6 +140,7 @@ class TestFailedExperiments:
 # Incomplete experiments
 # ---------------------------------------------------------------------------
 
+
 class TestIncompleteExperiments:
     def test_unknown_status_classifies_as_incomplete(self):
         payload = {**_VALID_ATTACK_PAYLOAD, "status": "in_progress"}
@@ -154,11 +157,23 @@ class TestIncompleteExperiments:
 # Invalid experiments (missing / malformed fields)
 # ---------------------------------------------------------------------------
 
+
 class TestInvalidExperiments:
-    @pytest.mark.parametrize("missing_field", [
-        "case_id", "kind", "objective", "split", "configuration",
-        "defense_profile", "model", "status", "attack_success", "latency_ms",
-    ])
+    @pytest.mark.parametrize(
+        "missing_field",
+        [
+            "case_id",
+            "kind",
+            "objective",
+            "split",
+            "configuration",
+            "defense_profile",
+            "model",
+            "status",
+            "attack_success",
+            "latency_ms",
+        ],
+    )
     def test_missing_required_field_raises(self, missing_field: str):
         payload = {k: v for k, v in _VALID_ATTACK_PAYLOAD.items() if k != missing_field}
         with pytest.raises(ValidationError) as exc:
@@ -206,6 +221,7 @@ class TestInvalidExperiments:
 # ---------------------------------------------------------------------------
 # Missing / conflicting evidence
 # ---------------------------------------------------------------------------
+
 
 class TestEvidenceHandling:
     def test_missing_poisoned_memory_does_not_count_as_poisoned(self):
@@ -263,6 +279,7 @@ class TestEvidenceHandling:
 # ---------------------------------------------------------------------------
 # Payload hash
 # ---------------------------------------------------------------------------
+
 
 class TestPayloadHash:
     def test_same_payload_same_hash(self):

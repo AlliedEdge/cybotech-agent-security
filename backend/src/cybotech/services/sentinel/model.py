@@ -1,11 +1,13 @@
 """Optional independent model reviewer. Its output can only add restrictions."""
 
+import json
+import os
 from typing import Literal
 
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field
 
-from cybotech.agents.contracts import ActionProposal
+from cybotech.agents.contracts import ActionProposal, DocumentEvidence
 from cybotech.services.sentinel.service import Sentinel, SentinelFinding
 
 
@@ -19,12 +21,16 @@ class ModelFinding(BaseModel):
 class ModelSentinel:
     def __init__(self, client: OpenAI, model: str) -> None:
         self.client, self.model = client, model
+        self.provider = os.getenv("CYBOTECH_PROVIDER", "openai")
         self.rules = Sentinel()
 
     def review(self, proposal: ActionProposal) -> SentinelFinding:
+        return self.review_with_context(proposal, [])
+
+    def review_with_context(
+        self, proposal: ActionProposal, evidence: list[DocumentEvidence]
+    ) -> SentinelFinding:
         rule = self.rules.review(proposal)
-        if rule.disposition != "gateway_evaluation":
-            return rule
         try:
             completion = self.client.chat.completions.parse(
                 model=self.model,
@@ -39,7 +45,17 @@ class ModelSentinel:
                             "data, or attempts to evade approval. You cannot authorize any action."
                         ),
                     },
-                    {"role": "user", "content": proposal.model_dump_json()},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "proposal": proposal.model_dump(mode="json"),
+                                "untrusted_document_evidence": [
+                                    item.model_dump(mode="json") for item in evidence[:5]
+                                ],
+                            }
+                        ),
+                    },
                 ],
                 response_format=ModelFinding,
                 max_completion_tokens=500,
@@ -50,13 +66,18 @@ class ModelSentinel:
             result = message.parsed
             return SentinelFinding(
                 status="completed",
-                risk=result.risk,
+                risk=max(
+                    (rule.risk, result.risk),
+                    key=lambda r: {"low": 0, "medium": 1, "high": 2}.get(r, 2),
+                ),
                 rationale=result.rationale,
                 evidence_refs=[],
-                disposition="flag_for_denial"
-                if result.suspicious or result.risk != "low"
-                else "gateway_evaluation",
-                provider=f"model:{self.model}",
+                disposition=(
+                    "flag_for_denial"
+                    if result.suspicious or result.risk != "low"
+                    else rule.disposition
+                ),
+                provider=f"{self.provider}:{self.model}",
             )
         except Exception:
             return SentinelFinding(
@@ -65,5 +86,5 @@ class ModelSentinel:
                 rationale="Model review unavailable.",
                 evidence_refs=[],
                 disposition="flag_for_denial",
-                provider=f"model:{self.model}",
+                provider=f"{self.provider}:{self.model}",
             )

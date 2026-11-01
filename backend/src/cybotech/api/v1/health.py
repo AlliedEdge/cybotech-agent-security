@@ -10,6 +10,8 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from cybotech import __version__
+from cybotech.agents.providers import provider_settings
+from cybotech.agents.registry import AgentId
 from cybotech.infrastructure.database.models import Memory
 from cybotech.infrastructure.database.session import get_db
 
@@ -18,14 +20,17 @@ router = APIRouter(tags=["health"])
 
 @router.get("/health")
 def health_check(db: Annotated[Session, Depends(get_db)]) -> JSONResponse:
+    provider_status = "offline"
+    if os.getenv("CYBOTECH_MODEL_MODE", "offline") != "offline":
+        try:
+            provider_settings(AgentId.PRIMARY)
+            provider_status = "configured_not_probed"
+        except ValueError:
+            provider_status = "unhealthy"
     dependencies = {
         "database": "unhealthy",
         "pgvector": "not_applicable",
-        "llm_provider": "offline"
-        if os.getenv("CYBOTECH_MODEL_MODE", "offline") == "offline"
-        else "configured_not_probed"
-        if os.getenv("OPENAI_API_KEY")
-        else "unhealthy",
+        "llm_provider": provider_status,
     }
     try:
         db.execute(select(Memory.id).limit(0))

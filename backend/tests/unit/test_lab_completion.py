@@ -36,3 +36,41 @@ def test_registered_id_does_not_trust_modified_content():
         resolve_registered_source(document.id, document.content + " injected")["trust_level"]
         == "untrusted"
     )
+
+
+def test_full_lab_invokes_independent_reviewers_and_records_handoffs():
+    from types import SimpleNamespace
+
+    from cybotech.services.memory_guard.model import MemoryFinding, ModelMemoryReviewer
+    from cybotech.services.sentinel.model import ModelFinding, ModelSentinel
+
+    calls = []
+
+    def client(role, result):
+        def parse(**kwargs):
+            calls.append((role, kwargs["model"]))
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(refusal=None, parsed=result))]
+            )
+
+        return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(parse=parse)))
+
+    memory = ModelMemoryReviewer(
+        client("memory", MemoryFinding(suspicious=True, rationale="test")), "memory-model"
+    )
+    sentinel = ModelSentinel(
+        client("sentinel", ModelFinding(risk="low", rationale="test", suspicious=False)),
+        "sentinel-model",
+    )
+    result = run_case(corpus()[0], "full", reviewer=sentinel, memory_reviewer=memory)
+    assert result["status"] == "completed"
+    assert result["attack_success"] is False
+    assert ("memory", "memory-model") in calls
+    assert ("sentinel", "sentinel-model") in calls
+    destinations = [
+        event["payload"].get("destination")
+        for event in result["trace"]
+        if event["type"] == "agent_handoff"
+    ]
+    assert "memory_guard" in destinations
+    assert "sentinel" in destinations

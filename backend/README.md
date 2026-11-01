@@ -1,7 +1,7 @@
 # Cybotech backend
 
 FastAPI, persistent memory defenses, simulated tools, and bounded security experiments.
-See the repository README for local startup and `docs/development/completion.md`
+See the repository README for local startup and [the demo guide](../docs/completion.md)
 for verification and implementation limits. Offline mode never calls a model provider.
 
 ## Disposable PostgreSQL / pgvector integration test
@@ -23,7 +23,7 @@ cd backend && \
   DATABASE_URL='postgresql+psycopg://cybotech_test:cybotech_test_password@127.0.0.1:55432/cybotech_test_retrieval' \
   uv run alembic upgrade head && \
   CYBOTECH_TEST_DATABASE_URL='postgresql+psycopg://cybotech_test:cybotech_test_password@127.0.0.1:55432/cybotech_test_retrieval' \
-  uv run pytest tests/integration/test_postgres_retrieval.py -v
+  uv run pytest tests/integration/test_postgres_retrieval.py tests/integration/test_postgres_document_retrieval.py -v
 docker stop cybotech-pgvector-test
 ```
 

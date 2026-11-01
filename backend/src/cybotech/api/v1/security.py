@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from threading import Lock
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -16,7 +17,9 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from cybotech.agents.contracts import ActionProposal, Document, MemoryProposal
-from cybotech.agents.graph import PrimaryAssistantGraph
+from cybotech.agents.providers import configured_model, provider_settings
+from cybotech.agents.registry import AgentId, Handoff, Operation
+from cybotech.agents.supervisor import SupervisorGraph
 from cybotech.infrastructure.database.models import AuditEvent, Memory, MemoryStatus, PolicyDecision
 from cybotech.infrastructure.database.session import get_db
 from cybotech.infrastructure.llm.offline import LocalAssistantModel, LocalEmbedder
@@ -27,7 +30,7 @@ from cybotech.services.integration.sources import registered_sources, resolve_re
 from cybotech.services.memory_guard.model import ModelMemoryReviewer
 from cybotech.services.memory_guard.service import MemoryGuard, MemoryReviewer
 from cybotech.services.policy_gateway.service import PolicyGateway
-from cybotech.services.red_team.corpus import corpus
+from cybotech.services.red_team.corpus import LabCase, corpus
 from cybotech.services.red_team.lab import Configuration, run_experiment
 from cybotech.services.retrieval.service import Embedder, OpenAIEmbedder
 from cybotech.services.sentinel.model import ModelSentinel
@@ -43,7 +46,7 @@ class ProposalIn(BaseModel):
     source_type: str = Field(min_length=1, max_length=40)
     source_id: str = Field(min_length=1, max_length=200)
     source_trust: str = "untrusted"
-    proposed_by: str = "primary_assistant"
+    proposed_by: Literal["primary_assistant"] = "primary_assistant"
     source_context: str = ""
 
 
@@ -51,7 +54,7 @@ class ActionIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     tool_name: str
     arguments: dict[str, Any]
-    proposed_by: str = "primary_assistant"
+    proposed_by: Literal["primary_assistant"] = "primary_assistant"
     session_id: str = "local"
     task_id: str = "local"
     user_task_description: str
@@ -94,6 +97,20 @@ def require_local_security_access(request: Request) -> None:
         "http://localhost:8000",
         "http://127.0.0.1:8000",
     }
+    for origin in os.getenv("CYBOTECH_LOCAL_ORIGINS", "").split(","):
+        origin = origin.strip()
+        parsed = urlsplit(origin)
+        if (
+            parsed.scheme == "http"
+            and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+            and parsed.netloc
+            and not parsed.username
+            and not parsed.password
+            and not parsed.path
+            and not parsed.query
+            and not parsed.fragment
+        ):
+            allowed_origins.add(origin)
     if request.headers.get("origin") and request.headers["origin"] not in allowed_origins:
         raise HTTPException(403, "Origin is not permitted for local security routes")
     proxy_hosts = set(filter(None, os.getenv("CYBOTECH_LOCAL_PROXY_HOSTS", "").split(",")))
@@ -122,6 +139,91 @@ class LabRunIn(BaseModel):
     mode: Literal["offline", "live"] = "offline"
 
 
+class GeneratedAttackIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    case_id: str = Field(min_length=1, max_length=120)
+    configuration: Configuration = "full"
+
+
+@router.post("/lab/generated-attack")
+def generated_attack(body: GeneratedAttackIn, db: DbSession) -> dict[str, Any]:
+    """Generate a synthetic attack and test it against the isolated live supervisor."""
+    if runtime_mode() != "live":
+        raise HTTPException(503, "Live model mode is required to generate an attack")
+    if not any(case.id == body.case_id and case.kind == "attack" for case in corpus()):
+        raise HTTPException(422, "Select a known attack scenario")
+    if not lab_lock.acquire(blocking=False):
+        raise HTTPException(409, "An experiment is already running; wait for completion")
+    try:
+        from cybotech.services.red_team.graph import OpenAIAdversarialProvider, VibeHackerGraph
+
+        provider = OpenAIAdversarialProvider(
+            runtime_client(),
+            configured_model(AgentId.VIBE_HACKER),
+        )
+        victim = OpenAIProvider(runtime_client(), configured_model(AgentId.PRIMARY))
+        reviewer = runtime_reviewer()
+        memory_reviewer = runtime_memory_reviewer()
+
+        def submit(case: LabCase, configuration: Configuration) -> dict[str, Any]:
+            from cybotech.services.integration.ports import PersistentEventPort
+
+            run_id = f"lab_{uuid.uuid4().hex}"
+            handoff = Handoff(
+                handoff_id=uuid.uuid4().hex,
+                task_id=run_id,
+                correlation_id=run_id,
+                source=AgentId.VIBE_HACKER,
+                destination=AgentId.SUPERVISOR,
+                initiating_agent=AgentId.VIBE_HACKER,
+                operation=Operation.COORDINATE,
+                source_refs=(case.id,),
+                trust_label="untrusted",
+            )
+            events = PersistentEventPort(db, run_id)
+            events.emit(
+                "agent_handoff",
+                {
+                    **handoff.model_dump(mode="json"),
+                    "provider": provider.name,
+                    "recommendation": "isolated_experiment",
+                },
+            )
+            report = run_experiment(
+                db,
+                [case],
+                [configuration],
+                victim,
+                reviewer=reviewer,
+                memory_reviewer=memory_reviewer,
+                parent_handoff_id=handoff.handoff_id,
+                run_id=run_id,
+            )
+            events.emit(
+                "agent_handoff",
+                {
+                    **handoff.model_copy(update={"status": "completed"}).model_dump(mode="json"),
+                    "provider": provider.name,
+                    "recommendation": "isolated_experiment",
+                },
+            )
+            return {**report["results"][0], "run_id": report["run_id"]}
+
+        outcome = VibeHackerGraph(provider=provider, submit=submit).run(
+            body.case_id, body.configuration, mode="live_model"
+        )
+        if outcome.status != "completed":
+            from cybotech.services.integration.ports import PersistentEventPort
+
+            PersistentEventPort(db, body.case_id).emit(
+                "attack_generation_failed",
+                {"status": outcome.status, "reason_code": outcome.termination_reason},
+            )
+        return {**outcome.model_dump(mode="json"), "victim_model": victim.name}
+    finally:
+        lab_lock.release()
+
+
 @router.get("/lab/cases")
 def lab_cases() -> dict[str, Any]:
     return {"items": [case.model_dump(mode="json") for case in corpus()]}
@@ -142,11 +244,21 @@ def run_lab(body: LabRunIn, db: DbSession) -> dict[str, Any]:
         raise HTTPException(409, "An experiment is already running; wait for completion")
     try:
         model = (
-            OpenAIProvider(runtime_client(), os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+            OpenAIProvider(runtime_client(), configured_model(AgentId.PRIMARY))
             if body.mode == "live"
             else None
         )
-        return run_experiment(db, [registry[i] for i in body.case_ids], body.configurations, model)
+        cases = [registry[i] for i in body.case_ids]
+        if model is not None:
+            return run_experiment(
+                db,
+                cases,
+                body.configurations,
+                model,
+                reviewer=runtime_reviewer(),
+                memory_reviewer=runtime_memory_reviewer(),
+            )
+        return run_experiment(db, cases, body.configurations, model)
     finally:
         lab_lock.release()
 
@@ -337,12 +449,13 @@ def request_approval(body: ActionIn, db: DbSession) -> dict[str, Any]:
 
 
 def runtime_client() -> OpenAI:
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise HTTPException(503, "Assistant model and embedding provider are not configured")
+    try:
+        settings = provider_settings(AgentId.PRIMARY)
+    except ValueError as error:
+        raise HTTPException(503, str(error)) from None
     return OpenAI(
-        api_key=api_key,
-        base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        api_key=settings.api_key,
+        base_url=settings.base_url,
         timeout=30,
         max_retries=0,
     )
@@ -356,27 +469,33 @@ def runtime_mode() -> str:
 
 
 def runtime_embedder() -> Embedder:
-    return OpenAIEmbedder(runtime_client()) if runtime_mode() == "live" else LocalEmbedder()
+    if runtime_mode() == "live" and os.getenv("CYBOTECH_PROVIDER", "openai") != "ollama":
+        return OpenAIEmbedder(runtime_client())
+    return LocalEmbedder()
 
 
 def runtime_reviewer() -> Reviewer:
-    mode = os.getenv("CYBOTECH_REVIEW_MODE", "deterministic")
+    mode = review_mode()
     if mode == "deterministic":
         return Sentinel()
     if mode == "model" and runtime_mode() == "live":
-        return ModelSentinel(runtime_client(), os.getenv("OPENAI_REVIEW_MODEL", "gpt-4o-mini"))
+        return ModelSentinel(runtime_client(), configured_model(AgentId.SENTINEL))
     raise HTTPException(503, "Reviewer mode must be deterministic or model with live mode enabled")
 
 
 def runtime_memory_reviewer() -> MemoryReviewer | None:
-    if os.getenv("CYBOTECH_REVIEW_MODE", "deterministic") == "model":
+    if review_mode() == "model":
         if runtime_mode() != "live":
             raise HTTPException(503, "Model review requires live mode")
-        return ModelMemoryReviewer(
-            runtime_client(), os.getenv("OPENAI_REVIEW_MODEL", "gpt-4o-mini")
-        )
+        return ModelMemoryReviewer(runtime_client(), configured_model(AgentId.MEMORY_GUARD))
     runtime_reviewer()
     return None
+
+
+def review_mode() -> str:
+    return os.getenv(
+        "CYBOTECH_REVIEW_MODE", "model" if runtime_mode() == "live" else "deterministic"
+    )
 
 
 @router.get("/documents")
@@ -386,16 +505,14 @@ def documents_catalog() -> dict[str, Any]:
 
 @router.get("/runtime")
 def runtime_configuration() -> dict[str, str]:
-    reviewer = os.getenv("CYBOTECH_REVIEW_MODE", "deterministic")
+    reviewer = review_mode()
     return {"mode": runtime_mode(), "reviewer": reviewer, "tools": "simulated"}
 
 
-def create_runtime_graph(
-    db: Session, documents: list[Document], task_id: str
-) -> PrimaryAssistantGraph:
+def create_runtime_graph(db: Session, documents: list[Document], task_id: str) -> SupervisorGraph:
     return build_persistent_graph(
         db,
-        OpenAIProvider(runtime_client(), os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+        OpenAIProvider(runtime_client(), configured_model(AgentId.PRIMARY))
         if runtime_mode() == "live"
         else LocalAssistantModel(),
         runtime_embedder(),
@@ -489,13 +606,18 @@ def security_events(
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
     event_type: str | None = None,
+    correlation_id: str | None = None,
 ) -> dict[str, Any]:
     stmt = select(AuditEvent).order_by(desc(AuditEvent.id)).offset(offset).limit(limit)
     if event_type:
         stmt = stmt.where(AuditEvent.event_type == event_type)
+    if correlation_id:
+        stmt = stmt.where(AuditEvent.correlation_id == correlation_id)
     count_stmt = select(func.count()).select_from(AuditEvent)
     if event_type:
         count_stmt = count_stmt.where(AuditEvent.event_type == event_type)
+    if correlation_id:
+        count_stmt = count_stmt.where(AuditEvent.correlation_id == correlation_id)
     return {
         "items": [serialize_event(e) for e in db.scalars(stmt).all()],
         "limit": limit,
@@ -536,6 +658,81 @@ def security_event(event_id: str, db: DbSession) -> dict[str, Any]:
     if not row:
         raise HTTPException(404, "Event not found")
     return serialize_event(row)
+
+
+_AGENT_TRACE_EVENT_TYPES = {
+    "supervisor_intake",
+    "agent_invocation",
+    "agent_handoff",
+    "memory_decision",
+    "memory_proposal_invalid",
+    "sentinel_finding",
+    "action_proposed",
+    "gateway_decision",
+    "gateway_authorized",
+    "gateway_denied",
+    "tool_execution_completed",
+    "task_failed",
+}
+
+
+def _trace_agent(event_type: str, payload: dict[str, Any]) -> str | None:
+    """Derive the responsible agent for a persisted event from its real payload."""
+    if event_type == "agent_invocation":
+        return str(payload.get("agent_id")) or None
+    if event_type == "agent_handoff":
+        return str(payload.get("destination")) or None
+    if event_type in {"gateway_decision", "gateway_authorized", "gateway_denied"}:
+        return "policy_gateway"
+    if event_type == "tool_execution_completed":
+        return "sandbox"
+    if event_type in {"memory_decision", "memory_proposal_invalid"}:
+        return "memory_guard"
+    if event_type == "supervisor_intake":
+        return "supervisor"
+    if event_type == "action_proposed":
+        return "primary_assistant"
+    return None
+
+
+@router.get("/agent-trace/{task_id}")
+def agent_trace(task_id: str, db: DbSession) -> dict[str, Any]:
+    """Reconstruct a task's agent execution timeline from persisted audit records.
+
+    The returned ``sequence`` is generated from the actual recorded events
+    (agent identities in ``agent_invocation``/``agent_handoff`` plus the gateway
+    and sandbox events), never from hardcoded frontend labels. Sensitive action
+    arguments and raw prompts are not returned; only references and outcomes.
+    """
+    rows = db.scalars(
+        select(AuditEvent).where(AuditEvent.correlation_id == task_id).order_by(AuditEvent.id)
+    ).all()
+    steps: list[dict[str, Any]] = []
+    sequence: list[str] = []
+    for row in rows:
+        if row.event_type not in _AGENT_TRACE_EVENT_TYPES:
+            continue
+        payload = row.payload or {}
+        agent = _trace_agent(row.event_type, payload)
+        if agent and agent not in sequence:
+            sequence.append(agent)
+        # Redact fields that may carry full action arguments or model dumps.
+        redacted = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"action", "arguments", "result", "error"}
+        }
+        steps.append(
+            {
+                "event": row.event_type,
+                "agent": agent,
+                "outcome": row.outcome,
+                "reason_code": row.reason_code,
+                "timestamp": row.occurred_at.isoformat() if row.occurred_at else None,
+                "payload": redacted,
+            }
+        )
+    return {"task_id": task_id, "sequence": sequence, "steps": steps}
 
 
 @router.get("/events/stream")

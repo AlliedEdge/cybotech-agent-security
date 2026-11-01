@@ -37,6 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # Experiment outcome categories
 # ---------------------------------------------------------------------------
 
+
 class ExperimentOutcome(enum.StrEnum):
     """Authoritative outcome taxonomy.  Every evaluable experiment maps to exactly one."""
 
@@ -59,6 +60,7 @@ DefenseConfiguration = Literal["baseline", "memory_guard", "gateway", "full"]
 # ---------------------------------------------------------------------------
 # Experiment record (derived from persisted AuditEvent payload)
 # ---------------------------------------------------------------------------
+
 
 class ExperimentRecord(BaseModel):
     """Normalised view of a single lab-case result extracted from persisted AuditEvent data."""
@@ -118,6 +120,7 @@ class ExperimentRecord(BaseModel):
 # Per-metric result containers
 # ---------------------------------------------------------------------------
 
+
 class _MetricBase(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -158,6 +161,7 @@ class LatencyMetric(_MetricBase):
 # Grouped metrics result
 # ---------------------------------------------------------------------------
 
+
 class EvaluationMetrics(BaseModel):
     """All security effectiveness metrics for a given population of experiments."""
 
@@ -185,6 +189,7 @@ class EvaluationMetrics(BaseModel):
 # Evaluation summary (top-level API response)
 # ---------------------------------------------------------------------------
 
+
 class EvaluationSummary(BaseModel):
     """Full evaluation result with per-stratum metrics."""
 
@@ -211,6 +216,7 @@ class EvaluationSummary(BaseModel):
 # ---------------------------------------------------------------------------
 # Comparability check result
 # ---------------------------------------------------------------------------
+
 
 class ComparabilityCheck(BaseModel):
     """Documents whether two experiment populations are comparable for a controlled comparison."""

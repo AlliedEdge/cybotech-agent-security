@@ -47,6 +47,20 @@ def test_untrusted_fact_is_retained_but_quarantined_and_deduplicated(db):
     assert record.content == "Weekly maintenance is Friday"
 
 
+def test_agent_recommendation_cannot_promote_memory_and_can_only_restrict(db):
+    guard = MemoryGuard(db, lambda *_: {"source_type": "internal", "trust_level": "verified"})
+    assert guard.propose_memory(proposal(), model_suspicious=False).status == "pending"
+    restricted = guard.propose_memory(proposal(), model_suspicious=True)
+    assert restricted.status == "quarantined"
+    assert restricted.reason == "semantic_review_flagged"
+
+
+def test_user_cannot_assign_review_agent_memory_permissions(db):
+    guard = MemoryGuard(db)
+    with pytest.raises(PermissionError, match="not permitted"):
+        guard.propose_memory(proposal().model_copy(update={"proposed_by": "sentinel"}))
+
+
 @pytest.mark.parametrize(
     ("text", "reason"),
     [
@@ -93,6 +107,28 @@ def test_gateway_denies_bad_destination_even_with_positive_sentinel(db):
     decision = PolicyGateway(db).authorize(p, sentinel_finding=finding)
     assert not decision.authorized
     assert decision.reason == "destination_not_approved"
+
+
+def test_gateway_never_accepts_review_agent_as_executor_even_if_allowlisted(db):
+    request = action().model_copy(update={"proposed_by": "sentinel"})
+    decision = PolicyGateway(db, principals={"sentinel"}).authorize(
+        request, sentinel_finding=Sentinel().review(request)
+    )
+    assert decision.authorized is False
+    assert decision.reason == "principal_not_allowed"
+
+
+@pytest.mark.parametrize(
+    ("risk", "disposition", "reason"),
+    [
+        ("high", "gateway_evaluation", "sentinel_flagged_action"),
+        ("low", "unknown", "sentinel_finding_invalid"),
+    ],
+)
+def test_gateway_rejects_invalid_or_high_risk_review(db, risk, disposition, reason):
+    request = action().model_copy(update={"tool_name": "read_email", "arguments": {"id": "demo"}})
+    finding = SentinelFinding(risk=risk, disposition=disposition, rationale="test")
+    assert PolicyGateway(db).authorize(request, sentinel_finding=finding).reason == reason
 
 
 def test_gateway_denies_missing_and_mismatched_approval(db):

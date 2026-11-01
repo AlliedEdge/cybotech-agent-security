@@ -52,6 +52,189 @@ def test_proposal_api_does_not_trust_caller_claim(api_client):
     assert listed.json()["items"][0]["provenance"]["trust_level"] == "untrusted"
 
 
+def test_caller_cannot_assign_review_agent_identity(api_client):
+    response = api_client.post(
+        "/api/v1/memories/proposals",
+        json={
+            "content": "synthetic fact",
+            "category": "fact",
+            "source_type": "email",
+            "source_id": "source",
+            "proposed_by": "sentinel",
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_registered_and_ingested_document_catalogs_are_distinct(api_client):
+    import base64
+
+    payload = {
+        "title": "demo.txt",
+        "content_type": "text/plain",
+        "content_base64": base64.b64encode(b"SYNTHETIC retrieval content").decode(),
+        "session_id": "session-a",
+    }
+    assert api_client.post("/api/v1/documents/ingest", json=payload).status_code == 200
+    registered = api_client.get("/api/v1/documents").json()["items"]
+    ingested = api_client.get("/api/v1/documents/ingested?session_id=session-a").json()["items"]
+    assert registered
+    assert ingested[0]["title"] == "demo.txt"
+    assert api_client.get("/api/v1/documents/ingested?session_id=session-b").json()["items"] == []
+    response = api_client.post(
+        "/api/v1/assistant/run",
+        json={"task": "retrieval content", "session_id": "session-a", "task_id": "test-rag"},
+    )
+    assert response.status_code == 200
+    assert "SYNTHETIC retrieval content" in response.json()["reply"]
+    memories = api_client.get("/api/v1/memories?status=quarantined").json()["items"]
+    assert any("SYNTHETIC retrieval content" in memory["content"] for memory in memories)
+
+
+def test_extra_demo_origins_must_be_loopback(api_client, monkeypatch):
+    monkeypatch.setenv("CYBOTECH_LOCAL_ORIGINS", "http://127.0.0.1:5174,http://evil.example")
+    assert (
+        api_client.get("/api/v1/runtime", headers={"Origin": "http://127.0.0.1:5174"}).status_code
+        == 200
+    )
+    assert (
+        api_client.get("/api/v1/runtime", headers={"Origin": "http://evil.example"}).status_code
+        == 403
+    )
+
+
+def test_generated_attack_requires_live_mode_and_known_attack(api_client, monkeypatch):
+    monkeypatch.setenv("CYBOTECH_MODEL_MODE", "offline")
+    assert (
+        api_client.post(
+            "/api/v1/lab/generated-attack", json={"case_id": "memory_poisoning-00"}
+        ).status_code
+        == 503
+    )
+    monkeypatch.setenv("CYBOTECH_MODEL_MODE", "live")
+    assert (
+        api_client.post("/api/v1/lab/generated-attack", json={"case_id": "benign-00"}).status_code
+        == 422
+    )
+
+
+def test_generated_attack_reports_live_victim(api_client, monkeypatch):
+    from cybotech.api.v1 import security
+    from cybotech.services.red_team import graph
+
+    monkeypatch.setenv("CYBOTECH_MODEL_MODE", "live")
+    monkeypatch.setattr(security, "runtime_client", lambda: object())
+    monkeypatch.setattr(graph, "OpenAIAdversarialProvider", lambda client, model: object())
+
+    class FakeGraph:
+        def __init__(self, provider, submit):
+            pass
+
+        def run(self, case_id, configuration, mode):
+            assert mode == "live_model"
+            return graph.AttackOutcome(
+                scenario_id=case_id,
+                configuration=configuration,
+                status="completed",
+                termination_reason="completed",
+            )
+
+    monkeypatch.setattr(graph, "VibeHackerGraph", FakeGraph)
+    response = api_client.post(
+        "/api/v1/lab/generated-attack", json={"case_id": "memory_poisoning-00"}
+    )
+    assert response.status_code == 200
+    assert response.json()["victim_model"].startswith("openai:")
+
+
+def test_generated_attack_persists_real_supervisor_experiment(api_client, monkeypatch):
+    from cybotech.agents.contracts import AgentTurn, ModelAction
+    from cybotech.api.v1 import security
+    from cybotech.services.red_team import graph
+    from cybotech.services.red_team.corpus import corpus, corpus_hash
+    from cybotech.services.sentinel.service import Sentinel
+
+    class FakeAttack:
+        name = "fake:attack-model"
+
+        def __init__(self, client, model):
+            pass
+
+        def plan(self, case):
+            return graph.AttackStrategy(
+                hypothesis="test",
+                technique="test",
+                payload_type="text/plain",
+                expected_outcome="denial",
+            )
+
+        def generate_payload(self, case, strategy):
+            return graph.LivePayload(
+                content=f"SYNTHETIC generated experiment content {case.target}",
+                content_type="text/plain",
+            )
+
+    class FakePrimary:
+        name = "fake:primary-model"
+
+        def generate(self, context):
+            return AgentTurn(
+                reply="done",
+                memories=[],
+                actions=[
+                    ModelAction(
+                        tool_name="read_document", arguments_json='{"id":"memory_poisoning-00"}'
+                    )
+                ],
+                done=True,
+            )
+
+    monkeypatch.setenv("CYBOTECH_MODEL_MODE", "live")
+    monkeypatch.setattr(security, "runtime_client", lambda: object())
+    monkeypatch.setattr(security, "runtime_reviewer", lambda: Sentinel())
+    monkeypatch.setattr(security, "runtime_memory_reviewer", lambda: None)
+    monkeypatch.setattr(security, "OpenAIProvider", lambda client, model: FakePrimary())
+    monkeypatch.setattr(graph, "OpenAIAdversarialProvider", FakeAttack)
+    result = api_client.post(
+        "/api/v1/lab/generated-attack", json={"case_id": "memory_poisoning-00"}
+    )
+    assert result.status_code == 200
+    assert result.json()["status"] == "completed"
+    run_id = result.json()["run_id"]
+    stored = api_client.get(f"/api/v1/lab/runs/{run_id}").json()
+    original = corpus()[0]
+    generated = original.model_copy(
+        update={
+            "document": original.document.model_copy(
+                update={
+                    "content": "SYNTHETIC generated experiment content collector-0@attacker.example"
+                }
+            )
+        }
+    )
+    assert stored["corpus_sha256"] == corpus_hash([generated])
+    assert stored["results"][0]["model"] == "fake:primary-model"
+    root_events = api_client.get(f"/api/v1/security-events?correlation_id={run_id}").json()["items"]
+    root = next(event for event in root_events if event["type"] == "agent_handoff")
+    child = next(
+        event for event in stored["results"][0]["trace"] if event["type"] == "agent_handoff"
+    )
+    assert child["payload"]["parent_handoff_id"] == root["payload"]["handoff_id"]
+
+
+def test_security_events_filter_by_task(api_client):
+    for task_id in ("task-one", "task-two"):
+        response = api_client.post(
+            "/api/v1/assistant/run",
+            json={"task": "Summarize", "session_id": "demo", "task_id": task_id},
+        )
+        assert response.status_code == 200
+    events = api_client.get("/api/v1/security-events?correlation_id=task-one").json()
+    assert events["items"]
+    assert all(event["correlation_id"] == "task-one" for event in events["items"])
+    assert events["total"] == len(events["items"])
+
+
 def test_action_api_denies_unapproved_recipient_and_persists_event(api_client):
     response = api_client.post(
         "/api/v1/actions/authorize",
@@ -250,3 +433,28 @@ def test_approval_binds_session_and_can_only_be_consumed_once(api_client):
     assert first.status_code == 200
     assert first.json()["success"] is True
     assert second.status_code == 409
+
+
+def test_agent_trace_reflects_real_persisted_execution(api_client):
+    """The agent execution trace is reconstructed from persisted audit records,
+    not from hardcoded frontend labels."""
+    run = api_client.post(
+        "/api/v1/assistant/run",
+        json={
+            "task": "Search customers for Lumenleaf",
+            "session_id": "s",
+            "task_id": "trace-1",
+            "documents": [],
+        },
+    )
+    assert run.status_code == 200
+    trace = api_client.get("/api/v1/agent-trace/trace-1").json()
+    assert trace["task_id"] == "trace-1"
+    assert trace["steps"], "trace must contain real persisted events"
+    # The sequence is derived from recorded agent identities, not labels.
+    assert "supervisor" in trace["sequence"]
+    assert "primary_assistant" in trace["sequence"]
+    # Sensitive action arguments are redacted from the trace payload.
+    for step in trace["steps"]:
+        assert "action" not in step["payload"]
+        assert "arguments" not in step["payload"]

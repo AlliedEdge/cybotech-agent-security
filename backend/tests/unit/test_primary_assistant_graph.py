@@ -115,6 +115,109 @@ def test_graph_compiles_and_normal_response_finishes():
     }
 
 
+def test_primary_model_receives_application_owned_identity():
+    class InspectModel:
+        name = "test:primary-model"
+
+        def generate(self, context):
+            assert context.agent_identity.agent_id == "primary_assistant"
+            assert context.agent_identity.parent_agent == "supervisor"
+            assert context.agent_identity.task_id == "task"
+            return AgentTurn(reply="done", memories=[], actions=[], done=True)
+
+    graph, *_ = _graph([])
+    graph.model = InspectModel()
+    assert graph.run("hello", "session", "task", []).status == "completed"
+
+
+@pytest.mark.parametrize("finding", [True, "invalid", RuntimeError("unavailable")])
+def test_independent_memory_review_only_adds_restrictions(finding):
+    from cybotech.agents.contracts import Document
+
+    class ReviewAgent:
+        model = "test-memory-model"
+
+        def is_suspicious(self, proposal):
+            assert proposal.raw_context == "synthetic untrusted source"
+            if isinstance(finding, Exception):
+                raise finding
+            return finding
+
+    class Enforcement(_Memory):
+        def propose_with_review(self, proposal, suspicious):
+            self.proposals.append((proposal, suspicious))
+            return MemoryDecision(proposal_id="m", status="quarantined", reason="review")
+
+    turn = AgentTurn(
+        reply="done",
+        done=True,
+        actions=[],
+        memories=[ModelMemory(content="fact", source_document_id="doc", claimed_category="fact")],
+    )
+    graph, _, _, _, _, events = _graph([turn])
+    enforcement = Enforcement()
+    graph.memory, graph.memory_review_agent = enforcement, ReviewAgent()
+    result = graph.run(
+        "remember",
+        "session",
+        "task",
+        [Document(id="doc", content="synthetic untrusted source", source_type="document")],
+    )
+    assert result.status == "completed"
+    assert enforcement.proposals[0][1] is True
+    handoffs = [payload for name, payload in events.items if name == "agent_handoff"]
+    assert handoffs[0]["destination"] == "memory_guard"
+    assert handoffs[0]["recommendation"] == "quarantine"
+    assert "synthetic untrusted source" not in str(handoffs)
+
+
+def test_handoff_budget_blocks_further_execution():
+    turn = AgentTurn(
+        reply="go",
+        memories=[],
+        done=True,
+        actions=[
+            ModelAction(tool_name="read_email", arguments_json='{"id":"a"}'),
+            ModelAction(tool_name="read_email", arguments_json='{"id":"b"}'),
+        ],
+    )
+    graph, _, _, gateway, dispatcher, events = _graph([turn], authorized=True)
+    graph.max_handoffs = 1
+    result = graph.run("read", "session", "task", [])
+    assert result.status == "failed"
+    assert len(gateway.actions) == 1
+    assert len(dispatcher.actions) == 1
+    assert any(event == "task_failed" for event, _ in events.items)
+
+
+def test_workflow_deadline_prevents_late_tool_execution(monkeypatch):
+    from types import SimpleNamespace
+
+    from cybotech.agents import graph as graph_module
+
+    clock = [0.0]
+    monkeypatch.setattr(graph_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    class SlowModel:
+        name = "test:slow"
+
+        def generate(self, context):
+            clock[0] = 2.0
+            return AgentTurn(
+                reply="late",
+                memories=[],
+                actions=[ModelAction(tool_name="read_email", arguments_json='{"id":"a"}')],
+                done=True,
+            )
+
+    graph, _, _, gateway, dispatcher, events = _graph([], authorized=True)
+    graph.model, graph.timeout_seconds = SlowModel(), 1
+    assert graph.run("read", "session", "task", []).status == "failed"
+    assert not gateway.actions
+    assert not dispatcher.actions
+    assert any(event == "task_failed" for event, _ in events.items)
+
+
 def test_memory_proposals_flow_through_memory_guard_before_final_response():
     turn = AgentTurn(
         reply="Stored safely",
