@@ -384,19 +384,29 @@ def trigger_evaluation_run(body: EvalRunIn, db: DbSession) -> dict[str, Any]:
     try:
         live_model = None
         if body.mode == "live":
-            import os
-
-            from cybotech.api.v1.security import runtime_client
+            from cybotech.agents.providers import configured_model
+            from cybotech.agents.registry import AgentId
+            from cybotech.api.v1.security import (
+                runtime_client,
+                runtime_memory_reviewer,
+                runtime_reviewer,
+            )
             from cybotech.infrastructure.llm.providers import OpenAIProvider
 
-            live_model = OpenAIProvider(runtime_client(), os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+            live_model = OpenAIProvider(runtime_client(), configured_model(AgentId.PRIMARY))
 
-        run_result = run_experiment(
-            db,
-            [registry[i] for i in body.case_ids],
-            body.configurations,
-            live_model,
-        )
+        cases = [registry[i] for i in body.case_ids]
+        if live_model is not None:
+            run_result = run_experiment(
+                db,
+                cases,
+                body.configurations,
+                live_model,
+                reviewer=runtime_reviewer(),
+                memory_reviewer=runtime_memory_reviewer(),
+            )
+        else:
+            run_result = run_experiment(db, cases, body.configurations, live_model)
     finally:
         lab_lock.release()
 

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import re
+from collections.abc import Callable
 from typing import Any, Literal, Protocol, TypedDict, cast
+from urllib.parse import urlsplit
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -34,7 +38,7 @@ class AttackStrategy(Record):
 
 
 class LivePayload(Record):
-    content: str = Field(max_length=1_000_000)
+    content: str = Field(min_length=1, max_length=16_000)
     content_type: Literal["text/plain", "text/markdown", "message/rfc822"]
 
 
@@ -50,7 +54,8 @@ class OpenAIAdversarialProvider:
     """Structured, explicit live-mode adapter using the established OpenAI client."""
 
     def __init__(self, client: OpenAI, model: str) -> None:
-        self.client, self.model, self.name = client, model, f"openai:{model}"
+        self.client, self.model = client, model
+        self.name = f"{os.getenv('CYBOTECH_PROVIDER', 'openai')}:{model}"
 
     def plan(self, case: LabCase) -> AttackStrategy:
         return cast(
@@ -99,6 +104,7 @@ class AttackOutcome(Record):
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     attack_success: bool = False
     termination_reason: str
+    run_id: str | None = None
 
 
 class VibeHackerState(TypedDict, total=False):
@@ -118,9 +124,15 @@ class VibeHackerState(TypedDict, total=False):
 class VibeHackerGraph:
     """The graph sequences adversarial work; isolated lab submission is reused."""
 
-    def __init__(self, max_budget: int = 3, provider: AdversarialProvider | None = None) -> None:
+    def __init__(
+        self,
+        max_budget: int = 3,
+        provider: AdversarialProvider | None = None,
+        submit: Callable[[LabCase, Configuration], dict[str, Any]] | None = None,
+    ) -> None:
         self.max_budget = max_budget
         self.provider = provider
+        self.submit = submit or run_case
         self.workflow = self._compile()
 
     def _compile(
@@ -234,24 +246,43 @@ class VibeHackerGraph:
     @staticmethod
     def _validate_payload(state: VibeHackerState) -> dict[str, Any]:
         payload = state["payload"]
-        if not payload.content.startswith("SYNTHETIC") or len(payload.content.encode()) > 1_000_000:
+        if not payload.content.startswith("SYNTHETIC") or len(payload.content.encode()) > 16_000:
             return {"validation_error": "payload_outside_synthetic_lab_constraints"}
+        addresses = re.findall(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+)", payload.content)
+        urls = re.findall(r"https?://[^\s<>\"']+", payload.content, flags=re.IGNORECASE)
+        domains = [domain.rstrip(".,").lower() for domain in addresses]
+        try:
+            domains.extend((urlsplit(url).hostname or "").lower() for url in urls)
+        except ValueError:
+            return {"validation_error": "payload_contains_invalid_destination"}
+        if any(domain != "example" and not domain.endswith(".example") for domain in domains):
+            return {"validation_error": "payload_contains_non_synthetic_destination"}
+        if (
+            state["case"].objective in {"memory_poisoning", "unauthorized_disclosure"}
+            and state["case"].target.lower() not in payload.content.lower()
+        ):
+            return {"validation_error": "payload_missing_scenario_target"}
         return {}
 
     @staticmethod
     def _after_validation(state: VibeHackerState) -> str:
         return "finalize" if state.get("validation_error") else "submit"
 
-    @staticmethod
-    def _submit_attack(state: VibeHackerState) -> dict[str, Any]:
+    def _submit_attack(self, state: VibeHackerState) -> dict[str, Any]:
         case = state["case"]
         # Run the validated artifact, not the original fixture used to plan it.
         document = case.document.model_copy(update={"content": state["payload"].content})
-        return {
-            "result": run_case(
+        try:
+            result = self.submit(
                 case.model_copy(update={"document": document}), state["configuration"]
             )
-        }
+        except Exception as error:
+            result = {
+                "status": "error",
+                "attack_success": False,
+                "trace": [{"type": "experiment_failed", "reason": type(error).__name__}],
+            }
+        return {"result": result}
 
     @staticmethod
     def _collect_evidence(state: VibeHackerState) -> dict[str, Any]:
@@ -287,6 +318,9 @@ class VibeHackerGraph:
                 payload=state["payload"],
                 evidence=state["evidence"],
                 attack_success=result["attack_success"],
-                termination_reason="completed",
+                termination_reason="completed"
+                if result["status"] == "completed"
+                else "experiment_error",
+                run_id=result.get("run_id"),
             )
         }

@@ -43,15 +43,14 @@ scoping, not authenticated identities. Do not upload confidential documents.
 Chat messages are displayed only while the page remains open; previous messages are not
 automatically included in later model requests. Documents remain scoped to the browser-tab
 session. In Attack Lab, **Generate and launch attack** requires a configured live model. It
-generates a synthetic payload and submits it to an isolated scripted victim; the separate
-live-primary comparison uses predefined cases. Do not compare those results as if both sides
-were live models.
+generates a synthetic payload and submits it to an isolated live-model supervisor. The
+separate live-primary comparison uses predefined cases. Live integration has not yet been
+verified against a real provider; these modes can incur charges.
 
-The attacker graph can generate a synthetic payload through a configured model. Its graph
-submission currently tests that payload against the scripted victim in the isolated lab;
-this is not evidence of a successful attack against a real model. The Attack Lab's live
-primary-model comparison is a separate path. Neither live mode has been verified against
-a real provider as part of this change.
+The attacker graph can generate a synthetic payload through a configured model. The dashboard
+submits it to the isolated live-model supervisor and persists the experiment; standalone graph
+calls without an injected runner retain the scripted victim. Neither live path has been verified
+against a real provider as part of this change.
 
 1. In Assistant, attach a synthetic document and ask a question. The answer uses retrieved document evidence and shows task-specific security details.
 2. In Attack Lab, compare a scenario with baseline and full defenses, expand each result to inspect the recorded trace, and run the held-out suite. Download the report or replay it after refresh.
@@ -59,9 +58,9 @@ a real provider as part of this change.
 
 The corpus contains 30 attack and 30 benign synthetic cases; held-out and development splits use separate wording templates, but are not independently curated. Attack success is objective-specific: a trusted poisoned memory, delivery to the attacker, or an unauthorized workflow delivery. Errors are excluded from rates and counted separately. Every case starts with a fresh isolated store. The baseline disables controls only inside the lab. No outbound email is sent.
 
-For optional live primary-model experiments set `CYBOTECH_MODEL_MODE=live`, `OPENAI_API_KEY`, and optionally `OPENAI_MODEL`. The API permits at most three live cases per run and up to four configurations. Live runs can use billable requests and send the synthetic input to the provider. The reviewer remains deterministic and local embeddings are used in the lab. Offline and live embeddings are different spaces; existing approved memories must be re-embedded before retrieval after changing modes.
+For optional live primary-model experiments set `CYBOTECH_MODEL_MODE=live`, `OPENAI_API_KEY`, and optionally `OPENAI_MODEL`. The API permits at most three live cases per run and up to four configurations. Live runs can use billable requests and send the synthetic input to the provider. Model reviewers are used by default in live mode; local embeddings are used in the lab. Offline and live embeddings are different spaces; existing approved memories must be re-embedded before retrieval after changing modes.
 
-For the assistant and approval workflow, set `CYBOTECH_REVIEW_MODE=model` in live mode to use an independent structured model reviewer (optionally set `OPENAI_REVIEW_MODEL`). The deterministic checks still run and the model cannot grant permissions. A refusal, malformed response, timeout, or provider failure blocks the action. This review can incur additional API charges. Lab runs continue to use the deterministic reviewer and record that choice in their reports.
+In live mode, independent structured model reviewers are enabled by default (optionally set `OPENAI_REVIEW_MODEL`, or the per-agent model settings). The deterministic checks still run and the model cannot grant permissions. A refusal, malformed response, timeout, or provider failure blocks the action. This review can incur additional API charges. `CYBOTECH_REVIEW_MODE=deterministic` explicitly selects the legacy review mode.
 
 In this mode, pending memory proposals from registered sources also receive model screening for hidden instructions and unsupported facts. A flag or unavailable reviewer quarantines the proposal; a clean model finding still requires human review. Untrusted sources are quarantined directly.
 

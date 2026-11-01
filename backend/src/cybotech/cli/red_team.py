@@ -18,8 +18,8 @@ Options
 --include-benign    Also run a matching number of benign control cases.
 --mode {offline,live}
                     offline: scripted adversary, no external API calls (default).
-                    live:    live-model adversary — requires CYBOTECH_MODEL_MODE=live
-                             and OPENAI_API_KEY.  Never triggered automatically.
+                    live:    live-model assistant — requires CYBOTECH_MODEL_MODE=live
+                             and a configured provider. Never triggered automatically.
 --db-url URL        SQLAlchemy database URL (defaults to DATABASE_URL env var).
                     Experiments are persisted here for later evaluation.
 --output {text,json}
@@ -225,17 +225,17 @@ def run(argv: list[str] | None = None) -> int:
 
     live_model: ModelProvider | None = None
     if args.mode == "live":
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            _abort("Live mode requires OPENAI_API_KEY to be set.")
-        from openai import OpenAI
+        from fastapi import HTTPException
 
+        from cybotech.agents.providers import configured_model
+        from cybotech.agents.registry import AgentId
+        from cybotech.api.v1.security import runtime_client
         from cybotech.infrastructure.llm.providers import OpenAIProvider
 
-        live_model = OpenAIProvider(
-            OpenAI(api_key=api_key, timeout=30, max_retries=0),
-            os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        )
+        try:
+            live_model = OpenAIProvider(runtime_client(), configured_model(AgentId.PRIMARY))
+        except (HTTPException, ValueError):
+            _abort("Live model provider is not configured correctly.")
 
     # ------------------------------------------------------------------ run
     from cybotech.services.red_team.lab import Configuration, run_experiment
@@ -256,9 +256,19 @@ def run(argv: list[str] | None = None) -> int:
         print("  Results will be persisted to the application database for evaluation.")
 
     with Session(engine, expire_on_commit=False) as db:
-        report = run_experiment(
-            db, selected_cases, cast(list[Configuration], configurations), live_model
-        )
+        if live_model is None:
+            report = run_experiment(db, selected_cases, cast(list[Configuration], configurations))
+        else:
+            from cybotech.api.v1.security import runtime_memory_reviewer, runtime_reviewer
+
+            report = run_experiment(
+                db,
+                selected_cases,
+                cast(list[Configuration], configurations),
+                live_model,
+                reviewer=runtime_reviewer(),
+                memory_reviewer=runtime_memory_reviewer(),
+            )
 
     run_id = report["run_id"]
     results: list[dict[str, Any]] = report.get("results", [])

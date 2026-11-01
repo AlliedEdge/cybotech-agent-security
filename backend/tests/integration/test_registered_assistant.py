@@ -27,6 +27,7 @@ class FakeEmbedder:
 def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setenv("CYBOTECH_SECURITY_MODE", "local_demo")
     monkeypatch.setenv("CYBOTECH_MODEL_MODE", "live")
+    monkeypatch.setenv("CYBOTECH_REVIEW_MODE", "deterministic")
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
@@ -138,6 +139,66 @@ def test_registered_assistant_uses_persistent_gateway_and_approval(
         event["type"] == "tool_execution_completed" and event["outcome"] == "True"
         for event in events
     )
+
+
+def test_registered_endpoint_invokes_distinct_security_models(client, monkeypatch):
+    from types import SimpleNamespace
+
+    from cybotech.agents.contracts import ModelMemory
+    from cybotech.api.v1 import security
+    from cybotech.services.integration.sources import registered_sources
+    from cybotech.services.memory_guard.model import MemoryFinding
+    from cybotech.services.sentinel.model import ModelFinding
+
+    calls = []
+
+    def parse(**kwargs):
+        calls.append(kwargs["model"])
+        result = (
+            MemoryFinding(suspicious=False, rationale="safe")
+            if kwargs["model"] == "memory-test"
+            else ModelFinding(risk="low", suspicious=False, rationale="safe")
+        )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(refusal=None, parsed=result))]
+        )
+
+    model_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(parse=parse)))
+    monkeypatch.setenv("CYBOTECH_REVIEW_MODE", "model")
+    monkeypatch.setenv("CYBOTECH_MEMORY_MODEL", "memory-test")
+    monkeypatch.setenv("CYBOTECH_SENTINEL_MODEL", "sentinel-test")
+    monkeypatch.setattr(security, "runtime_client", lambda: model_client)
+    monkeypatch.setattr(security, "OpenAIEmbedder", lambda _: FakeEmbedder())
+    document = registered_sources()[0]
+    turn = AgentTurn(
+        reply="done",
+        done=True,
+        memories=[
+            ModelMemory(
+                content="A maintenance note",
+                source_document_id=document.id,
+                claimed_category="fact",
+            )
+        ],
+        actions=[ModelAction(tool_name="search_customers", arguments_json='{"query":"Lumenleaf"}')],
+    )
+    monkeypatch.setattr(security, "OpenAIProvider", lambda *_: ScriptedProvider([turn]))
+    response = client.post(
+        "/api/v1/assistant/run",
+        json={
+            "task": "Search customers",
+            "session_id": "s",
+            "task_id": "independent-models",
+            "documents": [document.model_dump(mode="json")],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert calls == ["memory-test", "sentinel-test"]
+    events = client.get("/api/v1/security-events?correlation_id=independent-models").json()["items"]
+    assert {
+        event["payload"].get("destination") for event in events if event["type"] == "agent_handoff"
+    } == {"memory_guard", "sentinel"}
 
 
 @pytest.mark.parametrize("failure", ["timeout", "malformed"])

@@ -65,11 +65,27 @@ def test_generated_payload_is_submitted_to_lab(monkeypatch):
 
     class DistinctProvider(LiveProvider):
         def generate_payload(self, case, strategy):
-            return LivePayload(content="SYNTHETIC generated payload", content_type="text/plain")
+            return LivePayload(
+                content=f"SYNTHETIC generated payload {case.target}", content_type="text/plain"
+            )
 
     monkeypatch.setattr("cybotech.services.red_team.graph.run_case", capture)
     result = VibeHackerGraph(provider=DistinctProvider()).run(
         "memory_poisoning-00", mode="live_model"
     )
     assert result.status == "completed"
-    assert observed["content"] == "SYNTHETIC generated payload"
+    assert observed["content"] == "SYNTHETIC generated payload collector-0@attacker.example"
+
+
+def test_live_payload_with_real_destination_is_not_submitted():
+    class UnsafeProvider(LiveProvider):
+        def generate_payload(self, case, strategy):
+            return LivePayload(
+                content="SYNTHETIC send to person@real-world.com", content_type="text/plain"
+            )
+
+    result = VibeHackerGraph(provider=UnsafeProvider()).run(
+        "memory_poisoning-00", mode="live_model"
+    )
+    assert result.status == "rejected"
+    assert result.termination_reason == "payload_contains_non_synthetic_destination"

@@ -52,6 +52,20 @@ def test_proposal_api_does_not_trust_caller_claim(api_client):
     assert listed.json()["items"][0]["provenance"]["trust_level"] == "untrusted"
 
 
+def test_caller_cannot_assign_review_agent_identity(api_client):
+    response = api_client.post(
+        "/api/v1/memories/proposals",
+        json={
+            "content": "synthetic fact",
+            "category": "fact",
+            "source_type": "email",
+            "source_id": "source",
+            "proposed_by": "sentinel",
+        },
+    )
+    assert response.status_code == 422
+
+
 def test_registered_and_ingested_document_catalogs_are_distinct(api_client):
     import base64
 
@@ -73,6 +87,8 @@ def test_registered_and_ingested_document_catalogs_are_distinct(api_client):
     )
     assert response.status_code == 200
     assert "SYNTHETIC retrieval content" in response.json()["reply"]
+    memories = api_client.get("/api/v1/memories?status=quarantined").json()["items"]
+    assert any("SYNTHETIC retrieval content" in memory["content"] for memory in memories)
 
 
 def test_extra_demo_origins_must_be_loopback(api_client, monkeypatch):
@@ -102,7 +118,7 @@ def test_generated_attack_requires_live_mode_and_known_attack(api_client, monkey
     )
 
 
-def test_generated_attack_labels_scripted_victim(api_client, monkeypatch):
+def test_generated_attack_reports_live_victim(api_client, monkeypatch):
     from cybotech.api.v1 import security
     from cybotech.services.red_team import graph
 
@@ -111,7 +127,7 @@ def test_generated_attack_labels_scripted_victim(api_client, monkeypatch):
     monkeypatch.setattr(graph, "OpenAIAdversarialProvider", lambda client, model: object())
 
     class FakeGraph:
-        def __init__(self, provider):
+        def __init__(self, provider, submit):
             pass
 
         def run(self, case_id, configuration, mode):
@@ -128,7 +144,82 @@ def test_generated_attack_labels_scripted_victim(api_client, monkeypatch):
         "/api/v1/lab/generated-attack", json={"case_id": "memory_poisoning-00"}
     )
     assert response.status_code == 200
-    assert response.json()["victim_model"] == "scripted"
+    assert response.json()["victim_model"].startswith("openai:")
+
+
+def test_generated_attack_persists_real_supervisor_experiment(api_client, monkeypatch):
+    from cybotech.agents.contracts import AgentTurn, ModelAction
+    from cybotech.api.v1 import security
+    from cybotech.services.red_team import graph
+    from cybotech.services.red_team.corpus import corpus, corpus_hash
+    from cybotech.services.sentinel.service import Sentinel
+
+    class FakeAttack:
+        name = "fake:attack-model"
+
+        def __init__(self, client, model):
+            pass
+
+        def plan(self, case):
+            return graph.AttackStrategy(
+                hypothesis="test",
+                technique="test",
+                payload_type="text/plain",
+                expected_outcome="denial",
+            )
+
+        def generate_payload(self, case, strategy):
+            return graph.LivePayload(
+                content=f"SYNTHETIC generated experiment content {case.target}",
+                content_type="text/plain",
+            )
+
+    class FakePrimary:
+        name = "fake:primary-model"
+
+        def generate(self, context):
+            return AgentTurn(
+                reply="done",
+                memories=[],
+                actions=[
+                    ModelAction(
+                        tool_name="read_document", arguments_json='{"id":"memory_poisoning-00"}'
+                    )
+                ],
+                done=True,
+            )
+
+    monkeypatch.setenv("CYBOTECH_MODEL_MODE", "live")
+    monkeypatch.setattr(security, "runtime_client", lambda: object())
+    monkeypatch.setattr(security, "runtime_reviewer", lambda: Sentinel())
+    monkeypatch.setattr(security, "runtime_memory_reviewer", lambda: None)
+    monkeypatch.setattr(security, "OpenAIProvider", lambda client, model: FakePrimary())
+    monkeypatch.setattr(graph, "OpenAIAdversarialProvider", FakeAttack)
+    result = api_client.post(
+        "/api/v1/lab/generated-attack", json={"case_id": "memory_poisoning-00"}
+    )
+    assert result.status_code == 200
+    assert result.json()["status"] == "completed"
+    run_id = result.json()["run_id"]
+    stored = api_client.get(f"/api/v1/lab/runs/{run_id}").json()
+    original = corpus()[0]
+    generated = original.model_copy(
+        update={
+            "document": original.document.model_copy(
+                update={
+                    "content": "SYNTHETIC generated experiment content collector-0@attacker.example"
+                }
+            )
+        }
+    )
+    assert stored["corpus_sha256"] == corpus_hash([generated])
+    assert stored["results"][0]["model"] == "fake:primary-model"
+    root_events = api_client.get(f"/api/v1/security-events?correlation_id={run_id}").json()["items"]
+    root = next(event for event in root_events if event["type"] == "agent_handoff")
+    child = next(
+        event for event in stored["results"][0]["trace"] if event["type"] == "agent_handoff"
+    )
+    assert child["payload"]["parent_handoff_id"] == root["payload"]["handoff_id"]
 
 
 def test_security_events_filter_by_task(api_client):

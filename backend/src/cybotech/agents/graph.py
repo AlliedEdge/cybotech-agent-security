@@ -7,8 +7,11 @@ at the deterministic gateway's successful decision.
 
 from __future__ import annotations
 
+import hashlib
 import json
-from typing import Any, TypedDict
+import time
+import uuid
+from typing import Any, Protocol, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -16,6 +19,7 @@ from langgraph.graph.state import CompiledStateGraph
 from cybotech.agents.assistant import TaskResult
 from cybotech.agents.contracts import (
     ActionProposal,
+    ActionReviewRequest,
     AgentTurn,
     DispatcherPort,
     Document,
@@ -27,6 +31,7 @@ from cybotech.agents.contracts import (
     MemoryPort,
     MemoryProposal,
     MemoryRecord,
+    MemoryReviewRequest,
     ModelContext,
     ModelProvider,
     RetrievalPort,
@@ -34,6 +39,7 @@ from cybotech.agents.contracts import (
     SentinelPort,
     ToolResult,
 )
+from cybotech.agents.registry import AgentId, AgentIdentity, Handoff, Operation
 
 
 class PrimaryAssistantState(TypedDict, total=False):
@@ -56,6 +62,14 @@ class PrimaryAssistantState(TypedDict, total=False):
     review_available: bool
     status: str
     failure_type: str
+    memory_findings: list[bool]
+    handoff_count: int
+    parent_handoff_id: str | None
+    deadline: float
+
+
+class MemoryReviewAgent(Protocol):
+    def is_suspicious(self, proposal: MemoryProposal) -> bool: ...
 
 
 class PrimaryAssistantGraph:
@@ -72,9 +86,16 @@ class PrimaryAssistantGraph:
         events: EventPort,
         max_steps: int = 6,
         document_retrieval: DocumentRetrievalPort | None = None,
+        memory_review_agent: MemoryReviewAgent | None = None,
+        max_handoffs: int = 60,
+        timeout_seconds: float = 120,
     ) -> None:
-        if not 1 <= max_steps <= 20:
-            raise ValueError("max_steps must be between 1 and 20")
+        if (
+            not 1 <= max_steps <= 20
+            or not 1 <= max_handoffs <= 200
+            or not 1 <= timeout_seconds <= 300
+        ):
+            raise ValueError("invalid workflow budgets")
         self.model = model
         self.memory = memory
         self.retrieval = retrieval
@@ -84,6 +105,9 @@ class PrimaryAssistantGraph:
         self.dispatcher = dispatcher
         self.events = events
         self.max_steps = max_steps
+        self.max_handoffs = max_handoffs
+        self.timeout_seconds = timeout_seconds
+        self.memory_review_agent = memory_review_agent
         self.workflow = self._compile()
 
     def _compile(
@@ -96,6 +120,7 @@ class PrimaryAssistantGraph:
         graph.add_node("retrieve_trusted_memory", self._retrieve_trusted_memory)
         graph.add_node("retrieve_documents", self._retrieve_documents)
         graph.add_node("reason", self._reason)
+        graph.add_node("memory_agent_review", self._memory_agent_review)
         graph.add_node("memory_guard", self._memory_guard)
         graph.add_node("sentinel_review", self._sentinel_review)
         graph.add_node("policy_gateway", self._policy_gateway)
@@ -109,12 +134,13 @@ class PrimaryAssistantGraph:
             "reason",
             self._route_after_reason,
             {
-                "memory_guard": "memory_guard",
+                "memory_guard": "memory_agent_review",
                 "sentinel_review": "sentinel_review",
                 "reason": "reason",
                 "finalize": "finalize",
             },
         )
+        graph.add_edge("memory_agent_review", "memory_guard")
         graph.add_conditional_edges(
             "memory_guard",
             self._route_after_memories,
@@ -146,6 +172,7 @@ class PrimaryAssistantGraph:
         task_id: str,
         documents: list[Document],
         approval_id: str | None = None,
+        parent_handoff_id: str | None = None,
     ) -> TaskResult:
         """Execute a bounded graph; dependency failures cannot reach dispatch."""
         initial: PrimaryAssistantState = {
@@ -162,6 +189,9 @@ class PrimaryAssistantGraph:
             "step": 0,
             "action_index": 0,
             "status": "running",
+            "handoff_count": 0,
+            "parent_handoff_id": parent_handoff_id,
+            "deadline": time.monotonic() + self.timeout_seconds,
         }
         try:
             state = self.workflow.invoke(initial)
@@ -193,18 +223,63 @@ class PrimaryAssistantGraph:
     def _retrieve_documents(self, state: PrimaryAssistantState) -> dict[str, Any]:
         documents = self.document_retrieval.retrieve(state["task"], state["session_id"])
         self.events.emit("document_retrieval_completed", {"count": len(documents)})
-        return {"retrieved_documents": documents}
+        sources = dict(state["sources"])
+        for evidence in documents:
+            source = Document(
+                id=evidence.chunk_id,
+                content=evidence.content,
+                source_type="document",
+                trust_level="untrusted",
+            )
+            if source.id in sources and sources[source.id] != source:
+                raise ValueError("source identity collision")
+            sources[source.id] = source
+        return {"retrieved_documents": documents, "sources": sources}
 
     def _reason(self, state: PrimaryAssistantState) -> dict[str, Any]:
+        self._check_deadline(state)
         step = state["step"] + 1
-        turn = self.model.generate(
-            ModelContext(
-                user_task=state["task"],
-                documents=list(state["sources"].values()),
-                memories=state["memories"],
-                retrieved_documents=state["retrieved_documents"],
-                observations=state["observations"],
+        started = time.monotonic()
+        provider, separator, model = self.model.name.partition(":")
+        identity = AgentIdentity(
+            agent_id=AgentId.PRIMARY,
+            provider=provider[:200],
+            model=(model if separator else provider)[:200],
+            task_id=state["task_id"],
+            parent_agent=AgentId.SUPERVISOR,
+        )
+        try:
+            turn = self.model.generate(
+                ModelContext(
+                    user_task=state["task"],
+                    documents=list(state["sources"].values()),
+                    memories=state["memories"],
+                    retrieved_documents=state["retrieved_documents"],
+                    observations=state["observations"],
+                    agent_identity=identity,
+                )
             )
+            self._check_deadline(state)
+        except Exception as error:
+            self.events.emit(
+                "agent_invocation",
+                {
+                    "agent_id": AgentId.PRIMARY.value,
+                    "provider": self.model.name,
+                    "status": "failed",
+                    "error_type": type(error).__name__,
+                    "duration_ms": round((time.monotonic() - started) * 1000),
+                },
+            )
+            raise
+        self.events.emit(
+            "agent_invocation",
+            {
+                "agent_id": AgentId.PRIMARY.value,
+                "provider": self.model.name,
+                "status": "completed",
+                "duration_ms": round((time.monotonic() - started) * 1000),
+            },
         )
         return {"turn": turn, "reply": turn.reply, "step": step, "action_index": 0}
 
@@ -218,24 +293,99 @@ class PrimaryAssistantGraph:
 
     def _memory_guard(self, state: PrimaryAssistantState) -> dict[str, Any]:
         observations = list(state["observations"])
-        for candidate in state["turn"].memories:
+        for index, candidate in enumerate(state["turn"].memories):
+            self._check_deadline(state)
             source = state["sources"].get(candidate.source_document_id)
             if source is None:
                 observations.append("Memory rejected: unknown source_document_id")
                 self.events.emit("memory_proposal_invalid", {"reason": "unknown_source"})
                 continue
-            decision = self.memory.propose_memory(
-                MemoryProposal(
-                    content=candidate.content,
-                    source_document_id=source.id,
-                    proposed_by="primary_assistant",
-                    claimed_category=candidate.claimed_category,
-                    raw_context=source.content,
-                )
+            proposal = MemoryProposal(
+                content=candidate.content,
+                source_document_id=source.id,
+                proposed_by="primary_assistant",
+                claimed_category=candidate.claimed_category,
+                raw_context=source.content,
             )
+            if self.memory_review_agent is not None:
+                review_method = getattr(self.memory, "propose_with_review", None)
+                if review_method is None:
+                    raise RuntimeError("memory enforcement cannot apply agent finding")
+                decision = review_method(proposal, state["memory_findings"][index])
+            else:
+                decision = self.memory.propose_memory(proposal)
             self.events.emit("memory_decision", {"status": decision.status})
             observations.append(f"Memory decision: {decision.status}")
         return {"observations": observations}
+
+    def _memory_agent_review(self, state: PrimaryAssistantState) -> dict[str, Any]:
+        findings: list[bool] = []
+        count = state["handoff_count"]
+        for candidate in state["turn"].memories:
+            self._check_deadline(state)
+            source = state["sources"].get(candidate.source_document_id)
+            if self.memory_review_agent is None or source is None:
+                findings.append(False)
+                continue
+            count += 1
+            if count > self.max_handoffs:
+                raise RuntimeError("handoff budget exceeded")
+            handoff = Handoff(
+                handoff_id=uuid.uuid4().hex,
+                task_id=state["task_id"],
+                correlation_id=state["task_id"],
+                source=AgentId.SUPERVISOR,
+                destination=AgentId.MEMORY_GUARD,
+                initiating_agent=AgentId.PRIMARY,
+                operation=Operation.REVIEW_MEMORY,
+                source_refs=(source.id,),
+                trust_label="untrusted",
+                parent_handoff_id=state.get("parent_handoff_id"),
+            )
+            proposal = MemoryProposal(
+                content=candidate.content,
+                source_document_id=source.id,
+                proposed_by=AgentId.PRIMARY.value,
+                claimed_category=candidate.claimed_category,
+                raw_context=source.content,
+            )
+            request = MemoryReviewRequest(handoff=handoff, proposal=proposal)
+            start = time.monotonic()
+            status = "completed"
+            error_type: str | None = None
+            try:
+                analyze = getattr(self.memory_review_agent, "analyze", None)
+                if analyze:
+                    from cybotech.services.memory_guard.model import MemoryFinding
+
+                    finding = MemoryFinding.model_validate(analyze(request.proposal))
+                    suspicious = finding.suspicious
+                else:
+                    suspicious = self.memory_review_agent.is_suspicious(request.proposal)
+                if not isinstance(suspicious, bool):
+                    raise ValueError("invalid memory review")
+            except Exception as error:
+                status, suspicious = "failed", True
+                error_type = type(error).__name__
+            self._check_deadline(state)
+            self.events.emit(
+                "agent_handoff",
+                {
+                    **handoff.model_dump(mode="json"),
+                    "status": status,
+                    "model": getattr(self.memory_review_agent, "model", "unspecified"),
+                    "provider": getattr(
+                        self.memory_review_agent,
+                        "provider",
+                        type(self.memory_review_agent).__name__,
+                    ),
+                    "recommendation": "quarantine" if suspicious else "continue_review",
+                    "error_type": error_type,
+                    "duration_ms": round((time.monotonic() - start) * 1000),
+                },
+            )
+            findings.append(suspicious)
+        return {"memory_findings": findings, "handoff_count": count}
 
     def _route_after_memories(self, state: PrimaryAssistantState) -> str:
         if state["turn"].actions:
@@ -243,6 +393,9 @@ class PrimaryAssistantGraph:
         return self._next_turn_or_final(state)
 
     def _sentinel_review(self, state: PrimaryAssistantState) -> dict[str, Any]:
+        self._check_deadline(state)
+        if state["handoff_count"] >= self.max_handoffs:
+            return {"status": "failed", "failure_type": "HandoffBudgetExceeded"}
         try:
             candidate = state["turn"].actions[state["action_index"]]
             arguments = json.loads(candidate.arguments_json)
@@ -272,15 +425,71 @@ class PrimaryAssistantGraph:
             },
         )
         review_available = True
+        direct_evidence = [
+            DocumentEvidence(
+                chunk_id=f"source:{document.id}",
+                document_id=document.id,
+                content=document.content[:2000],
+                title=document.id,
+                source_type=document.source_type,
+                content_hash=hashlib.sha256(document.content[:2000].encode()).hexdigest(),
+            )
+            for document in list(state["sources"].values())[:5]
+        ]
+        evidence = [*direct_evidence, *state["retrieved_documents"]][:10]
+        handoff = Handoff(
+            handoff_id=uuid.uuid4().hex,
+            task_id=state["task_id"],
+            correlation_id=state["task_id"],
+            source=AgentId.SUPERVISOR,
+            destination=AgentId.SENTINEL,
+            initiating_agent=AgentId.PRIMARY,
+            operation=Operation.REVIEW_ACTION,
+            source_refs=tuple(
+                [memory.id for memory in state["memories"]] + [doc.chunk_id for doc in evidence]
+            ),
+            trust_label="mixed",
+            parent_handoff_id=state.get("parent_handoff_id"),
+        )
+        start = time.monotonic()
+        request = ActionReviewRequest(handoff=handoff, proposal=action, evidence=evidence)
         try:
-            finding = self.sentinel.review(action)
+            review_with_context = getattr(self.sentinel, "review_with_context", None)
+            finding = (
+                review_with_context(request.proposal, request.evidence)
+                if review_with_context
+                else self.sentinel.review(request.proposal)
+            )
+            if finding.get("status") == "unavailable":
+                review_available = False
         except Exception:
             review_available = False
             finding = {"recommendation": "UNAVAILABLE"}
-        self.events.emit("sentinel_finding", {"action_id": action_id, "finding": finding})
-        return {"action": action, "review_available": review_available}
+        self._check_deadline(state)
+        self.events.emit(
+            "agent_handoff",
+            {
+                **handoff.model_dump(mode="json"),
+                "status": "completed" if review_available else "failed",
+                "recommendation": finding.get("disposition", "unavailable"),
+                "provider": finding.get("provider", "unspecified"),
+                "duration_ms": round((time.monotonic() - start) * 1000),
+            },
+        )
+        safe_finding = {
+            key: finding[key]
+            for key in ("status", "risk", "disposition", "provider", "evidence_refs")
+            if key in finding
+        }
+        self.events.emit("sentinel_finding", {"action_id": action_id, "finding": safe_finding})
+        return {
+            "action": action,
+            "review_available": review_available,
+            "handoff_count": state["handoff_count"] + 1,
+        }
 
     def _policy_gateway(self, state: PrimaryAssistantState) -> dict[str, Any]:
+        self._check_deadline(state)
         if state.get("status") == "failed":
             return {}
         action = state["action"]
@@ -322,6 +531,7 @@ class PrimaryAssistantGraph:
         return self._next_action_or_turn(state)
 
     def _sandbox_execution(self, state: PrimaryAssistantState) -> dict[str, Any]:
+        self._check_deadline(state)
         result = self.dispatcher.execute(state["action"])
         results = [*state["results"], result]
         observations = [*state["observations"], result.model_dump_json()]
@@ -332,9 +542,8 @@ class PrimaryAssistantGraph:
                 "action_id": self._action_id(state["action"]),
                 "task_id": state["task_id"],
                 "success": result.success,
-                "arguments": result.arguments,
-                "result": result.result,
-                "error": result.error,
+                "argument_keys": sorted(result.arguments),
+                "error_present": result.error is not None,
             },
         )
         sources = dict(state["sources"])
@@ -361,6 +570,11 @@ class PrimaryAssistantGraph:
         if state["action_index"] < len(state["turn"].actions):
             return "next_action"
         return self._next_turn_or_final(state)
+
+    @staticmethod
+    def _check_deadline(state: PrimaryAssistantState) -> None:
+        if time.monotonic() >= state["deadline"]:
+            raise TimeoutError("workflow deadline exceeded")
 
     def _next_turn_or_final(self, state: PrimaryAssistantState) -> str:
         if state["turn"].done:
