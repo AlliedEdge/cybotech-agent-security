@@ -17,9 +17,9 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from cybotech.agents.contracts import ActionProposal, Document, MemoryProposal
-from cybotech.agents.graph import PrimaryAssistantGraph
 from cybotech.agents.providers import configured_model, provider_settings
 from cybotech.agents.registry import AgentId, Handoff, Operation
+from cybotech.agents.supervisor import SupervisorGraph
 from cybotech.infrastructure.database.models import AuditEvent, Memory, MemoryStatus, PolicyDecision
 from cybotech.infrastructure.database.session import get_db
 from cybotech.infrastructure.llm.offline import LocalAssistantModel, LocalEmbedder
@@ -509,9 +509,7 @@ def runtime_configuration() -> dict[str, str]:
     return {"mode": runtime_mode(), "reviewer": reviewer, "tools": "simulated"}
 
 
-def create_runtime_graph(
-    db: Session, documents: list[Document], task_id: str
-) -> PrimaryAssistantGraph:
+def create_runtime_graph(db: Session, documents: list[Document], task_id: str) -> SupervisorGraph:
     return build_persistent_graph(
         db,
         OpenAIProvider(runtime_client(), configured_model(AgentId.PRIMARY))
@@ -660,6 +658,81 @@ def security_event(event_id: str, db: DbSession) -> dict[str, Any]:
     if not row:
         raise HTTPException(404, "Event not found")
     return serialize_event(row)
+
+
+_AGENT_TRACE_EVENT_TYPES = {
+    "supervisor_intake",
+    "agent_invocation",
+    "agent_handoff",
+    "memory_decision",
+    "memory_proposal_invalid",
+    "sentinel_finding",
+    "action_proposed",
+    "gateway_decision",
+    "gateway_authorized",
+    "gateway_denied",
+    "tool_execution_completed",
+    "task_failed",
+}
+
+
+def _trace_agent(event_type: str, payload: dict[str, Any]) -> str | None:
+    """Derive the responsible agent for a persisted event from its real payload."""
+    if event_type == "agent_invocation":
+        return str(payload.get("agent_id")) or None
+    if event_type == "agent_handoff":
+        return str(payload.get("destination")) or None
+    if event_type in {"gateway_decision", "gateway_authorized", "gateway_denied"}:
+        return "policy_gateway"
+    if event_type == "tool_execution_completed":
+        return "sandbox"
+    if event_type in {"memory_decision", "memory_proposal_invalid"}:
+        return "memory_guard"
+    if event_type == "supervisor_intake":
+        return "supervisor"
+    if event_type == "action_proposed":
+        return "primary_assistant"
+    return None
+
+
+@router.get("/agent-trace/{task_id}")
+def agent_trace(task_id: str, db: DbSession) -> dict[str, Any]:
+    """Reconstruct a task's agent execution timeline from persisted audit records.
+
+    The returned ``sequence`` is generated from the actual recorded events
+    (agent identities in ``agent_invocation``/``agent_handoff`` plus the gateway
+    and sandbox events), never from hardcoded frontend labels. Sensitive action
+    arguments and raw prompts are not returned; only references and outcomes.
+    """
+    rows = db.scalars(
+        select(AuditEvent).where(AuditEvent.correlation_id == task_id).order_by(AuditEvent.id)
+    ).all()
+    steps: list[dict[str, Any]] = []
+    sequence: list[str] = []
+    for row in rows:
+        if row.event_type not in _AGENT_TRACE_EVENT_TYPES:
+            continue
+        payload = row.payload or {}
+        agent = _trace_agent(row.event_type, payload)
+        if agent and agent not in sequence:
+            sequence.append(agent)
+        # Redact fields that may carry full action arguments or model dumps.
+        redacted = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"action", "arguments", "result", "error"}
+        }
+        steps.append(
+            {
+                "event": row.event_type,
+                "agent": agent,
+                "outcome": row.outcome,
+                "reason_code": row.reason_code,
+                "timestamp": row.occurred_at.isoformat() if row.occurred_at else None,
+                "payload": redacted,
+            }
+        )
+    return {"task_id": task_id, "sequence": sequence, "steps": steps}
 
 
 @router.get("/events/stream")

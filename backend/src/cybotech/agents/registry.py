@@ -4,10 +4,19 @@ These identities are internal capabilities, not authenticated end-user identitie
 No client request or retrieved document can register a new role.
 """
 
+from datetime import UTC, datetime
 from enum import StrEnum
 from types import MappingProxyType
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+# Bounded handoff chain depth. A task may not exceed this many handoffs; the
+# supervisor enforces it at every delegation so an agent cannot loop forever.
+MAX_HANDOFFS_PER_TASK = 200
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class AgentId(StrEnum):
@@ -98,6 +107,14 @@ class Handoff(BaseModel):
     source_refs: tuple[str, ...] = Field(default=(), max_length=50)
     trust_label: str = Field(default="untrusted", pattern="^(untrusted|trusted|mixed)$")
     status: str = Field(default="requested", pattern="^(requested|completed|failed)$")
+    # Typed handoff protocol: reference the bounded input/output payloads by id/hash,
+    # never by raw content. References keep audit records free of prompts, documents
+    # and action arguments unless strictly necessary.
+    input_reference: str | None = Field(default=None, max_length=120)
+    output_reference: str | None = Field(default=None, max_length=120)
+    created_at: datetime = Field(default_factory=utc_now)
+    completed_at: datetime | None = None
+    failure_reason: str | None = Field(default=None, max_length=500)
 
     @model_validator(mode="after")
     def validate_route(self) -> "Handoff":

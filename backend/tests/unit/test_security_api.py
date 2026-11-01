@@ -433,3 +433,28 @@ def test_approval_binds_session_and_can_only_be_consumed_once(api_client):
     assert first.status_code == 200
     assert first.json()["success"] is True
     assert second.status_code == 409
+
+
+def test_agent_trace_reflects_real_persisted_execution(api_client):
+    """The agent execution trace is reconstructed from persisted audit records,
+    not from hardcoded frontend labels."""
+    run = api_client.post(
+        "/api/v1/assistant/run",
+        json={
+            "task": "Search customers for Lumenleaf",
+            "session_id": "s",
+            "task_id": "trace-1",
+            "documents": [],
+        },
+    )
+    assert run.status_code == 200
+    trace = api_client.get("/api/v1/agent-trace/trace-1").json()
+    assert trace["task_id"] == "trace-1"
+    assert trace["steps"], "trace must contain real persisted events"
+    # The sequence is derived from recorded agent identities, not labels.
+    assert "supervisor" in trace["sequence"]
+    assert "primary_assistant" in trace["sequence"]
+    # Sensitive action arguments are redacted from the trace payload.
+    for step in trace["steps"]:
+        assert "action" not in step["payload"]
+        assert "arguments" not in step["payload"]

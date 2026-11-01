@@ -5,11 +5,16 @@ must resolve source metadata and canonical memory state on the service side.
 """
 
 from datetime import UTC, datetime
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from cybotech.agents.registry import AgentId, AgentIdentity, Handoff, Operation
+
+if TYPE_CHECKING:
+    # Imported only for type checking to avoid a circular import: the sentinel
+    # service imports ActionProposal from this module at runtime.
+    from cybotech.services.sentinel.service import SentinelFinding
 
 MemoryState = Literal["trusted", "quarantined", "rejected", "pending", "expired", "revoked"]
 
@@ -88,6 +93,9 @@ class ActionProposal(Record):
 class MemoryReviewRequest(Record):
     handoff: Handoff
     proposal: MemoryProposal
+    # Application-resolved source trust, supplied by trusted orchestration. Never
+    # derived from content; the agent uses it only to shape its advisory decision.
+    source_trust: Literal["untrusted", "internal", "verified"] = "untrusted"
 
     @model_validator(mode="after")
     def validate_request(self) -> "MemoryReviewRequest":
@@ -116,6 +124,45 @@ class ActionReviewRequest(Record):
         ):
             raise ValueError("invalid action review handoff")
         return self
+
+
+class MemoryReviewResult(Record):
+    """Typed output contract for the Memory Guard specialist agent.
+
+    The model recommendation is advisory: only the deterministic memory lifecycle
+    service may transition a memory to ``trusted``. A reviewer can add restrictions
+    (REJECT/QUARANTINE/NEEDS_REVIEW) but cannot grant trust.
+    """
+
+    decision: Literal["APPROVE", "REJECT", "QUARANTINE", "NEEDS_REVIEW"]
+    risk: Literal["low", "medium", "high"]
+    reasoning: str = Field(max_length=1000)
+    evidence_refs: tuple[str, ...] = Field(default=(), max_length=20)
+    source_trust: Literal["untrusted", "internal", "verified"]
+    model_suspicious: bool = False
+    provider: str = Field(default="deterministic", max_length=200)
+
+
+class SentinelReviewResult(Record):
+    """Typed output contract for the Sentinel specialist agent.
+
+    Sentinel is advisory only. A security decision here never authorizes a tool
+    call; the deterministic Policy Enforcement Gateway remains the final boundary.
+    ``DENY``/``RESTRICT`` add restrictions; ``ALLOW`` only means "no objection found".
+    """
+
+    security_decision: Literal["ALLOW", "DENY", "RESTRICT", "NEEDS_REVIEW"]
+    threat_category: str = Field(default="none", max_length=80)
+    severity: Literal["low", "medium", "high", "critical"] = "low"
+    risk_level: Literal["low", "medium", "high"] = "low"
+    reasoning: str = Field(max_length=1000)
+    evidence_refs: tuple[str, ...] = Field(default=(), max_length=20)
+    restrictions: tuple[str, ...] = Field(default=(), max_length=20)
+    human_review: bool = False
+    provider: str = Field(default="deterministic", max_length=200)
+    # ``available`` is False only when the reviewer could not produce a finding
+    # (timeout, provider failure, malformed output). Protected actions fail closed.
+    available: bool = True
 
 
 class GatewayDecision(Record):
@@ -188,7 +235,12 @@ class SentinelPort(Protocol):
 
 
 class GatewayPort(Protocol):
-    def authorize(self, proposal: ActionProposal) -> GatewayDecision: ...
+    def authorize(
+        self,
+        proposal: ActionProposal,
+        *,
+        sentinel_finding: SentinelFinding | None = None,
+    ) -> GatewayDecision: ...
 
 
 class ToolPort(Protocol):

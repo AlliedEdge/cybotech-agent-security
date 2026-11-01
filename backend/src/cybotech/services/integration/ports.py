@@ -111,12 +111,17 @@ class PolicyGatewayPort:
         self.gateway = PolicyGateway(db)
         self.sentinel = sentinel
 
-    def authorize(self, proposal: ActionProposal) -> GatewayDecision:
-        data = self.sentinel.findings.pop(PolicyGateway.action_hash(proposal), None)
-        try:
-            finding = SentinelFinding.model_validate(data) if data is not None else None
-        except Exception:
-            finding = None
+    def authorize(
+        self, proposal: ActionProposal, *, sentinel_finding: SentinelFinding | None = None
+    ) -> GatewayDecision:
+        if sentinel_finding is None:
+            data = self.sentinel.findings.pop(PolicyGateway.action_hash(proposal), None)
+            try:
+                finding = SentinelFinding.model_validate(data) if data is not None else None
+            except Exception:
+                finding = None
+        else:
+            finding = sentinel_finding
         return self.gateway.authorize(
             proposal, sentinel_finding=finding, approval_id=proposal.approval_id
         )
@@ -206,6 +211,7 @@ def build_persistent_graph(
         dispatcher=SandboxDispatcher(documents),
         events=ports.events,
         memory_review_agent=memory_reviewer,
+        source_resolver=source_resolver,
     )
 
 
