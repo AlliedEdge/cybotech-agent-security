@@ -20,6 +20,7 @@ from cybotech.services.evaluation.service import EvaluationService
 # DB fixture
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def db():
     engine = create_engine(
@@ -34,6 +35,7 @@ def db():
 # ---------------------------------------------------------------------------
 # Seed helpers
 # ---------------------------------------------------------------------------
+
 
 def _add_case_event(
     db: Session,
@@ -71,14 +73,16 @@ def _add_case_event(
         "latency_ms": latency_ms,
         "trace": [],
     }
-    db.add(AuditEvent(
-        event_id=f"evt_case_{run_id}_{case_id}{event_id_suffix}",
-        event_type="lab_case_completed",
-        actor="lab",
-        correlation_id=run_id,
-        outcome=status,
-        payload=payload,
-    ))
+    db.add(
+        AuditEvent(
+            event_id=f"evt_case_{run_id}_{case_id}{event_id_suffix}",
+            event_type="lab_case_completed",
+            actor="lab",
+            correlation_id=run_id,
+            outcome=status,
+            payload=payload,
+        )
+    )
 
 
 def _add_run_event(
@@ -91,24 +95,26 @@ def _add_run_event(
     embedding: str = "local-token-hash-384-v1",
     reviewer: str = "deterministic",
 ) -> None:
-    db.add(AuditEvent(
-        event_id=f"evt_run_{run_id}",
-        event_type="lab_run_completed",
-        actor="lab",
-        correlation_id=run_id,
-        outcome="completed",
-        payload={
-            "run_id": run_id,
-            "corpus_version": corpus_version,
-            "corpus_sha256": corpus_sha256,
-            "evidence_kind": evidence_kind,
-            "storage": "isolated_sqlite",
-            "embedding": embedding,
-            "reviewer": reviewer,
-            "metrics": [],
-            "results": [],
-        },
-    ))
+    db.add(
+        AuditEvent(
+            event_id=f"evt_run_{run_id}",
+            event_type="lab_run_completed",
+            actor="lab",
+            correlation_id=run_id,
+            outcome="completed",
+            payload={
+                "run_id": run_id,
+                "corpus_version": corpus_version,
+                "corpus_sha256": corpus_sha256,
+                "evidence_kind": evidence_kind,
+                "storage": "isolated_sqlite",
+                "embedding": embedding,
+                "reviewer": reviewer,
+                "metrics": [],
+                "results": [],
+            },
+        )
+    )
     db.commit()
 
 
@@ -145,6 +151,7 @@ def _seed_run(
 # load_all_records
 # ---------------------------------------------------------------------------
 
+
 class TestLoadAllRecords:
     def test_empty_db_returns_no_records(self, db: Session):
         svc = EvaluationService(db)
@@ -170,14 +177,16 @@ class TestLoadAllRecords:
         assert errors[0]["reason"] == "run_metadata_not_found"
 
     def test_malformed_run_event_does_not_crash(self, db: Session):
-        db.add(AuditEvent(
-            event_id="evt_bad_run",
-            event_type="lab_run_completed",
-            actor="lab",
-            correlation_id="run_bad",
-            outcome="completed",
-            payload={"incomplete": True},  # missing required fields
-        ))
+        db.add(
+            AuditEvent(
+                event_id="evt_bad_run",
+                event_type="lab_run_completed",
+                actor="lab",
+                correlation_id="run_bad",
+                outcome="completed",
+                payload={"incomplete": True},  # missing required fields
+            )
+        )
         db.commit()
         svc = EvaluationService(db)
         records, _errors = svc.load_all_records()
@@ -186,14 +195,16 @@ class TestLoadAllRecords:
     def test_malformed_case_event_produces_parse_error(self, db: Session):
         _add_run_event(db, run_id="run_x")
         # Add a case with missing required fields
-        db.add(AuditEvent(
-            event_id="evt_bad_case",
-            event_type="lab_case_completed",
-            actor="lab",
-            correlation_id="run_x",
-            outcome="completed",
-            payload={"run_id": "run_x", "case_id": "bad"},  # many fields missing
-        ))
+        db.add(
+            AuditEvent(
+                event_id="evt_bad_case",
+                event_type="lab_case_completed",
+                actor="lab",
+                correlation_id="run_x",
+                outcome="completed",
+                payload={"run_id": "run_x", "case_id": "bad"},  # many fields missing
+            )
+        )
         db.commit()
         svc = EvaluationService(db)
         _records, errors = svc.load_all_records()
@@ -236,6 +247,7 @@ class TestLoadAllRecords:
 # ---------------------------------------------------------------------------
 # evaluate()
 # ---------------------------------------------------------------------------
+
 
 class TestEvaluate:
     def test_all_blocked_gives_zero_asr(self, db: Session):
@@ -301,6 +313,7 @@ class TestEvaluate:
 # compare_baseline_vs_full()
 # ---------------------------------------------------------------------------
 
+
 class TestCompareBaselineVsFull:
     def test_returns_incomparable_when_only_one_configuration(self, db: Session):
         _seed_run(db, "run_full", configuration="full")
@@ -334,12 +347,18 @@ class TestCompareBaselineVsFull:
 
     def test_filter_by_generation_mode(self, db: Session):
         _add_case_event(
-            db, run_id="r_base", case_id="c0", configuration="baseline",
+            db,
+            run_id="r_base",
+            case_id="c0",
+            configuration="baseline",
         )
         _add_run_event(db, run_id="r_base", evidence_kind="scripted")
 
         _add_case_event(
-            db, run_id="r_full", case_id="c0", configuration="full",
+            db,
+            run_id="r_full",
+            case_id="c0",
+            configuration="full",
         )
         _add_run_event(db, run_id="r_full", evidence_kind="scripted")
 
@@ -352,6 +371,7 @@ class TestCompareBaselineVsFull:
 # ---------------------------------------------------------------------------
 # list_runs
 # ---------------------------------------------------------------------------
+
 
 class TestListRuns:
     def test_lists_seeded_runs(self, db: Session):
@@ -381,6 +401,7 @@ class TestListRuns:
 # ---------------------------------------------------------------------------
 # get_experiment_by_id
 # ---------------------------------------------------------------------------
+
 
 class TestGetExperimentById:
     def test_finds_record(self, db: Session):

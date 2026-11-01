@@ -77,6 +77,7 @@ def _record(
 # A. Attack Success Rate
 # ---------------------------------------------------------------------------
 
+
 class TestAttackSuccessRate:
     def test_all_blocked(self):
         records = [_record(outcome=ExperimentOutcome.attack_blocked) for _ in range(5)]
@@ -147,6 +148,7 @@ class TestAttackSuccessRate:
 # B. Memory Poisoning Success Rate
 # ---------------------------------------------------------------------------
 
+
 class TestMemoryPoisoningSuccessRate:
     def test_all_blocked(self):
         records = [
@@ -205,6 +207,7 @@ class TestMemoryPoisoningSuccessRate:
 # ---------------------------------------------------------------------------
 # C. Unauthorized Tool Execution Rate
 # ---------------------------------------------------------------------------
+
 
 class TestUnauthorizedToolExecutionRate:
     def test_no_executions(self):
@@ -277,11 +280,10 @@ class TestUnauthorizedToolExecutionRate:
 # D. Detection Rate
 # ---------------------------------------------------------------------------
 
+
 class TestDetectionRate:
     def test_full_detection(self):
-        records = [
-            _record(outcome=ExperimentOutcome.attack_blocked) for _ in range(5)
-        ]
+        records = [_record(outcome=ExperimentOutcome.attack_blocked) for _ in range(5)]
         m = detection_rate(records)
         assert m.available
         assert m.numerator == 5
@@ -320,6 +322,7 @@ class TestDetectionRate:
 # ---------------------------------------------------------------------------
 # E. False Positive Rate
 # ---------------------------------------------------------------------------
+
 
 class TestFalsePositiveRate:
     def test_no_benign_records_unavailable(self):
@@ -381,6 +384,7 @@ class TestFalsePositiveRate:
 # ---------------------------------------------------------------------------
 # F. Latency Overhead
 # ---------------------------------------------------------------------------
+
 
 class TestLatencyOverhead:
     def _make_records(
@@ -492,9 +496,11 @@ class TestLatencyOverhead:
 # Outcome counter
 # ---------------------------------------------------------------------------
 
+
 class TestCountOutcomes:
     def test_all_outcomes_present_in_result(self):
         from cybotech.services.evaluation.contracts import ExperimentOutcome
+
         counts = count_outcomes([])
         assert set(counts) == {o.value for o in ExperimentOutcome}
         assert all(v == 0 for v in counts.values())
@@ -515,6 +521,7 @@ class TestCountOutcomes:
 # Wilson CI sanity
 # ---------------------------------------------------------------------------
 
+
 class TestWilsonCI:
     def test_ci_bounds_within_0_1(self):
         m = attack_success_rate(
@@ -531,10 +538,9 @@ class TestWilsonCI:
         assert m.confidence_interval_95 is None
 
     def test_proportion_matches_ratio(self):
-        records = (
-            [_record(outcome=ExperimentOutcome.attack_succeeded, attack_success=True)] * 3
-            + [_record(outcome=ExperimentOutcome.attack_blocked)] * 7
-        )
+        records = [_record(outcome=ExperimentOutcome.attack_succeeded, attack_success=True)] * 3 + [
+            _record(outcome=ExperimentOutcome.attack_blocked)
+        ] * 7
         m = attack_success_rate(records)
         assert abs(m.proportion - 0.3) < 1e-6
         assert abs(m.percent - 30.0) < 1e-4

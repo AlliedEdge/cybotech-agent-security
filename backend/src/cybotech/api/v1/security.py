@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from threading import Lock
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -94,6 +95,20 @@ def require_local_security_access(request: Request) -> None:
         "http://localhost:8000",
         "http://127.0.0.1:8000",
     }
+    for origin in os.getenv("CYBOTECH_LOCAL_ORIGINS", "").split(","):
+        origin = origin.strip()
+        parsed = urlsplit(origin)
+        if (
+            parsed.scheme == "http"
+            and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+            and parsed.netloc
+            and not parsed.username
+            and not parsed.password
+            and not parsed.path
+            and not parsed.query
+            and not parsed.fragment
+        ):
+            allowed_origins.add(origin)
     if request.headers.get("origin") and request.headers["origin"] not in allowed_origins:
         raise HTTPException(403, "Origin is not permitted for local security routes")
     proxy_hosts = set(filter(None, os.getenv("CYBOTECH_LOCAL_PROXY_HOSTS", "").split(",")))

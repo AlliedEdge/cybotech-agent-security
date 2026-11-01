@@ -52,6 +52,41 @@ def test_proposal_api_does_not_trust_caller_claim(api_client):
     assert listed.json()["items"][0]["provenance"]["trust_level"] == "untrusted"
 
 
+def test_registered_and_ingested_document_catalogs_are_distinct(api_client):
+    import base64
+
+    payload = {
+        "title": "demo.txt",
+        "content_type": "text/plain",
+        "content_base64": base64.b64encode(b"SYNTHETIC retrieval content").decode(),
+        "session_id": "session-a",
+    }
+    assert api_client.post("/api/v1/documents/ingest", json=payload).status_code == 200
+    registered = api_client.get("/api/v1/documents").json()["items"]
+    ingested = api_client.get("/api/v1/documents/ingested?session_id=session-a").json()["items"]
+    assert registered
+    assert ingested[0]["title"] == "demo.txt"
+    assert api_client.get("/api/v1/documents/ingested?session_id=session-b").json()["items"] == []
+    response = api_client.post(
+        "/api/v1/assistant/run",
+        json={"task": "retrieval content", "session_id": "session-a", "task_id": "test-rag"},
+    )
+    assert response.status_code == 200
+    assert "SYNTHETIC retrieval content" in response.json()["reply"]
+
+
+def test_extra_demo_origins_must_be_loopback(api_client, monkeypatch):
+    monkeypatch.setenv("CYBOTECH_LOCAL_ORIGINS", "http://127.0.0.1:5174,http://evil.example")
+    assert (
+        api_client.get("/api/v1/runtime", headers={"Origin": "http://127.0.0.1:5174"}).status_code
+        == 200
+    )
+    assert (
+        api_client.get("/api/v1/runtime", headers={"Origin": "http://evil.example"}).status_code
+        == 403
+    )
+
+
 def test_action_api_denies_unapproved_recipient_and_persists_event(api_client):
     response = api_client.post(
         "/api/v1/actions/authorize",

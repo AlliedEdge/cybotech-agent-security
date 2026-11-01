@@ -19,6 +19,11 @@ export function AssistantWorkspace() {
   const [task, setTask] = useState("Summarize the vendor note and remember useful facts.");
   const [source, setSource] = useState<Document>({ id: "pasted-email", content: "", source_type: "email", trust_level: "untrusted" });
   const [sessionId] = useState(() => crypto.randomUUID());
+  const indexDocument = useMutation({ mutationFn: () => {
+    const bytes = new TextEncoder().encode(source.content);
+    const encoded = btoa(Array.from(bytes, byte => String.fromCharCode(byte)).join(""));
+    return api("documents/ingest", { title: "Session document.txt", content_type: "text/plain", content_base64: encoded, session_id: sessionId });
+  } });
   const loadSource = useMutation({ mutationFn: () => api<{ items: Document[] }>("documents"),
     onSuccess: data => { if (data.items[0]) setSource(data.items[0]); },
   });
@@ -39,8 +44,10 @@ export function AssistantWorkspace() {
       <div className="my-4 flex flex-wrap gap-3">
         <button type="button" className="text-sm text-cyan-200" disabled={loadSource.isPending} onClick={() => loadSource.mutate()}>Load verified example</button>
         <button type="button" className="text-sm text-slate-400" onClick={() => setSource({ ...source, content: "" })}>Clear document for recall</button>
+        <button type="button" className="text-sm text-cyan-200" disabled={!source.content.trim() || indexDocument.isPending} onClick={() => indexDocument.mutate()}>Index document for this session</button>
       </div>
-      <Failure error={run.error ?? loadSource.error ?? runtime.error} />
+      {indexDocument.isSuccess && <p role="status" className="my-2 text-xs text-cyan-200">Document indexed as untrusted evidence. Clear the document and ask a related question in this session to retrieve it.</p>}
+      <Failure error={run.error ?? indexDocument.error ?? loadSource.error ?? runtime.error} />
       <button className={button} disabled={run.isPending || !task.trim()}>{run.isPending ? "Running…" : "Run assistant"}</button>
     </form>
     <section className={panel} aria-live="polite"><h3 className="mb-4 font-semibold">Assistant response</h3>

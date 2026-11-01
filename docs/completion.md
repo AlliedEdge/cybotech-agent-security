@@ -34,6 +34,18 @@ Install Python 3.12–3.14, Node 20+ and uv. From `backend`, run `uv sync --froz
 
 ## Demo story
 
+To try document RAG, paste synthetic text in Assistant and select **Index document for this
+session**. Clear the document field and ask a question about it without reloading the page.
+The assistant retrieves chunks for that session as untrusted evidence. Offline mode returns
+extracts; live mode passes the chunks to the configured model. Session identifiers are demo
+scoping, not authenticated identities. Do not upload confidential documents.
+
+The attacker graph can generate a synthetic payload through a configured model. Its graph
+submission currently tests that payload against the scripted victim in the isolated lab;
+this is not evidence of a successful attack against a real model. The Attack Lab's live
+primary-model comparison is a separate path. Neither live mode has been verified against
+a real provider as part of this change.
+
 1. In Assistant, load the verified synthetic document and run the task. Inspect its pending memory in Memories and explicitly approve it. Clear the document and ask a related follow-up to demonstrate retrieval.
 2. In Attack Lab, compare a scenario with baseline and full defenses, expand each result to inspect the recorded trace, and run the held-out suite. Download the report or replay it after refresh.
 3. In Approvals, create a synthetic report request, review its exact contents, approve, and execute it in the simulator. A consumed approval cannot be reused.
