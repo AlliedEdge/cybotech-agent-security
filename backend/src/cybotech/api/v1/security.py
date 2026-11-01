@@ -137,6 +137,36 @@ class LabRunIn(BaseModel):
     mode: Literal["offline", "live"] = "offline"
 
 
+class GeneratedAttackIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    case_id: str = Field(min_length=1, max_length=120)
+    configuration: Configuration = "full"
+
+
+@router.post("/lab/generated-attack")
+def generated_attack(body: GeneratedAttackIn) -> dict[str, Any]:
+    """Generate a synthetic attack with a live model and test a scripted victim."""
+    if runtime_mode() != "live":
+        raise HTTPException(503, "Live model mode is required to generate an attack")
+    if not any(case.id == body.case_id and case.kind == "attack" for case in corpus()):
+        raise HTTPException(422, "Select a known attack scenario")
+    if not lab_lock.acquire(blocking=False):
+        raise HTTPException(409, "An experiment is already running; wait for completion")
+    try:
+        from cybotech.services.red_team.graph import OpenAIAdversarialProvider, VibeHackerGraph
+
+        provider = OpenAIAdversarialProvider(
+            runtime_client(),
+            os.getenv("OPENAI_ATTACK_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini")),
+        )
+        outcome = VibeHackerGraph(provider=provider).run(
+            body.case_id, body.configuration, mode="live_model"
+        )
+        return {**outcome.model_dump(mode="json"), "victim_model": "scripted"}
+    finally:
+        lab_lock.release()
+
+
 @router.get("/lab/cases")
 def lab_cases() -> dict[str, Any]:
     return {"items": [case.model_dump(mode="json") for case in corpus()]}
@@ -504,13 +534,18 @@ def security_events(
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
     event_type: str | None = None,
+    correlation_id: str | None = None,
 ) -> dict[str, Any]:
     stmt = select(AuditEvent).order_by(desc(AuditEvent.id)).offset(offset).limit(limit)
     if event_type:
         stmt = stmt.where(AuditEvent.event_type == event_type)
+    if correlation_id:
+        stmt = stmt.where(AuditEvent.correlation_id == correlation_id)
     count_stmt = select(func.count()).select_from(AuditEvent)
     if event_type:
         count_stmt = count_stmt.where(AuditEvent.event_type == event_type)
+    if correlation_id:
+        count_stmt = count_stmt.where(AuditEvent.correlation_id == correlation_id)
     return {
         "items": [serialize_event(e) for e in db.scalars(stmt).all()],
         "limit": limit,

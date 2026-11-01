@@ -7,53 +7,9 @@ const input = "w-full rounded-lg border border-slate-700 bg-slate-950 p-3 text-s
 const button = "rounded-lg bg-cyan-300 px-4 py-2 text-sm font-semibold text-slate-950 disabled:opacity-40";
 type Document = { id: string; content: string; source_type: string; trust_level: string };
 type Runtime = { mode: "offline" | "live"; reviewer: string; tools: string };
-type TaskResult = { status: string; reply: string; steps: number; tool_results: unknown[] };
 
 function Failure({ error }: { error: Error | null }) {
   return error ? <p role="alert" className="my-3 text-sm text-rose-300">{error.message}</p> : null;
-}
-
-export function AssistantWorkspace() {
-  const cache = useQueryClient();
-  const runtime = useQuery({ queryKey: ["runtime"], queryFn: () => api<Runtime>("runtime") });
-  const [task, setTask] = useState("Summarize the vendor note and remember useful facts.");
-  const [source, setSource] = useState<Document>({ id: "pasted-email", content: "", source_type: "email", trust_level: "untrusted" });
-  const [sessionId] = useState(() => crypto.randomUUID());
-  const indexDocument = useMutation({ mutationFn: () => {
-    const bytes = new TextEncoder().encode(source.content);
-    const encoded = btoa(Array.from(bytes, byte => String.fromCharCode(byte)).join(""));
-    return api("documents/ingest", { title: "Session document.txt", content_type: "text/plain", content_base64: encoded, session_id: sessionId });
-  } });
-  const loadSource = useMutation({ mutationFn: () => api<{ items: Document[] }>("documents"),
-    onSuccess: data => { if (data.items[0]) setSource(data.items[0]); },
-  });
-  const run = useMutation({
-    mutationFn: () => api<TaskResult>("assistant/run", { task, session_id: sessionId,
-      task_id: crypto.randomUUID(), documents: source.content.trim() ? [source] : [] }),
-    onSuccess: () => { void cache.invalidateQueries(); },
-  });
-  return <div className="grid gap-5 xl:grid-cols-2">
-    <form className={panel} onSubmit={event => { event.preventDefault(); run.mutate(); }}>
-      <p className="mb-4 text-sm text-slate-400">Mode: <strong className="text-cyan-200">{runtime.data?.mode ?? "loading"}</strong>. Offline mode extracts text without an AI call. Memory still passes through the real review workflow.</p>
-      <label className="mb-2 block text-sm" htmlFor="assistant-task">Your task</label>
-      <textarea id="assistant-task" className={input} value={task} maxLength={8000} onChange={event => setTask(event.target.value)} required />
-      <label className="mb-2 mt-4 block text-sm" htmlFor="source-text">Synthetic email or document</label>
-      <textarea id="source-text" className={`${input} min-h-48`} value={source.content} maxLength={16000}
-        onChange={event => setSource({ ...source, content: event.target.value })} />
-      <p className="my-2 text-xs text-slate-500">Leave empty to test recall from reviewed memories. Editing a registered document makes its provenance untrusted.</p>
-      <div className="my-4 flex flex-wrap gap-3">
-        <button type="button" className="text-sm text-cyan-200" disabled={loadSource.isPending} onClick={() => loadSource.mutate()}>Load verified example</button>
-        <button type="button" className="text-sm text-slate-400" onClick={() => setSource({ ...source, content: "" })}>Clear document for recall</button>
-        <button type="button" className="text-sm text-cyan-200" disabled={!source.content.trim() || indexDocument.isPending} onClick={() => indexDocument.mutate()}>Index document for this session</button>
-      </div>
-      {indexDocument.isSuccess && <p role="status" className="my-2 text-xs text-cyan-200">Document indexed as untrusted evidence. Clear the document and ask a related question in this session to retrieve it.</p>}
-      <Failure error={run.error ?? indexDocument.error ?? loadSource.error ?? runtime.error} />
-      <button className={button} disabled={run.isPending || !task.trim()}>{run.isPending ? "Running…" : "Run assistant"}</button>
-    </form>
-    <section className={panel} aria-live="polite"><h3 className="mb-4 font-semibold">Assistant response</h3>
-      {run.data ? <><p className="mb-3 text-xs text-cyan-200">{run.data.status} · {run.data.steps} step(s)</p><p className="whitespace-pre-wrap text-sm text-slate-300">{run.data.reply}</p><p className="mt-6 text-sm text-slate-400">Review proposed memories in Memories. Actions appear in Tool calls and Approvals.</p></> : <p className="text-sm text-slate-500">Run a task, review its proposed memory, then clear the document and ask a follow-up.</p>}
-    </section>
-  </div>;
 }
 
 type LabCase = { id: string; kind: string; objective: string; split: string; document: Document };
@@ -113,6 +69,7 @@ export function AttackLab() {
   const [mode, setMode] = useState("offline");
   const [selected, setSelected] = useState(["baseline", "full"]);
   const [report, setReport] = useState<Report | null>(null);
+  const generated = useMutation({ mutationFn: () => api<{ status: string; termination_reason: string; attack_success: boolean; victim_model: string; payload: { content: string; provider: string } | null }>("lab/generated-attack", { case_id: caseId, configuration: "full" }) });
   const run = useMutation({ mutationFn: (ids: string[]) => api<Report>("lab/runs", { case_ids: ids, configurations: selected, mode }),
     onSuccess: data => { setReport(data); void cache.invalidateQueries(); },
   });
@@ -126,6 +83,7 @@ export function AttackLab() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   return <div className="space-y-5">
+    <section className={panel}><h3 className="font-semibold">Vibe Hacker · generate an attack</h3><p className="my-3 text-sm text-slate-400">Generate a synthetic document with the configured model and run it against an isolated, scripted test assistant. This is not a live-model victim test.</p><button className={button} disabled={generated.isPending || runtime.data?.mode !== "live" || activeCase?.kind !== "attack"} onClick={() => generated.mutate()}>{generated.isPending ? "Generating…" : "Generate and launch attack"}</button>{runtime.data?.mode !== "live" && <p className="mt-3 text-xs text-amber-200">Configure live model mode to enable attack generation.</p>}<Failure error={generated.error} />{generated.data && <div className="mt-4 rounded-lg bg-slate-950 p-4 text-sm"><p>Status: {generated.data.status} · {generated.data.termination_reason}</p><p>Victim: scripted · attack success: {String(generated.data.attack_success)}</p>{generated.data.payload && <><p className="mt-2 text-xs text-slate-400">Generated by {generated.data.payload.provider}</p><pre className="mt-2 whitespace-pre-wrap break-words">{generated.data.payload.content}</pre></>}</div>}</section>
     <section className={panel}><h3 className="font-semibold">Attack → memory → fresh session → policy decision</h3>
       <p className="my-3 text-sm text-slate-400">Experiments use synthetic data, isolated memory, and simulated tools. Scripted mode deliberately follows attacks to test the controls. Its scores do not measure real AI robustness.</p>
       <div className="grid gap-4 md:grid-cols-2">

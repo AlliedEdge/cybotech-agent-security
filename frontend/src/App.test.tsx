@@ -18,8 +18,10 @@ describe("security dashboard", () => {
 
   it("shows persisted-data empty states", async () => {
     render(<App />);
+    expect(screen.getByPlaceholderText("Ask anything or describe what you need...")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Overview" }));
     expect(await screen.findByText("No persisted events yet.")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Memories" }));
+    await userEvent.click(screen.getByRole("button", { name: "Documents & Memory" }));
     expect(await screen.findByText("No persisted memories yet.")).toBeInTheDocument();
   });
 
@@ -28,6 +30,7 @@ describe("security dashboard", () => {
       ? response({ items: [{ id: "evt-1", type: "gateway_decision", timestamp: "2026-01-01T00:00:00Z", actor: "gateway", outcome: "denied", reason_code: "destination_not_approved" }] })
       : response({ items: [] })));
     render(<App />);
+    await userEvent.click(screen.getByRole("button", { name: "Overview" }));
     expect(await screen.findByText("destination_not_approved")).toBeInTheDocument();
     expect(screen.getByText("denied")).toBeInTheDocument();
   });
@@ -43,6 +46,7 @@ describe("security dashboard", () => {
       return response({ items: [], limit: 100, offset: 0, total: 0 });
     }));
     render(<App />);
+    await userEvent.click(screen.getByRole("button", { name: "Overview" }));
     expect(await screen.findByText("45")).toBeInTheDocument();
     expect(screen.getByText("450")).toBeInTheDocument();
   });
@@ -57,7 +61,7 @@ describe("security dashboard", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     const user = userEvent.setup();
     render(<App />);
-    await user.click(await screen.findByRole("button", { name: "Memories" }));
+    await user.click(await screen.findByRole("button", { name: "Documents & Memory" }));
     await user.click(await screen.findByRole("button", { name: "Approve" }));
     expect(confirm).toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining("/approve"), expect.anything());

@@ -87,6 +87,63 @@ def test_extra_demo_origins_must_be_loopback(api_client, monkeypatch):
     )
 
 
+def test_generated_attack_requires_live_mode_and_known_attack(api_client, monkeypatch):
+    monkeypatch.setenv("CYBOTECH_MODEL_MODE", "offline")
+    assert (
+        api_client.post(
+            "/api/v1/lab/generated-attack", json={"case_id": "memory_poisoning-00"}
+        ).status_code
+        == 503
+    )
+    monkeypatch.setenv("CYBOTECH_MODEL_MODE", "live")
+    assert (
+        api_client.post("/api/v1/lab/generated-attack", json={"case_id": "benign-00"}).status_code
+        == 422
+    )
+
+
+def test_generated_attack_labels_scripted_victim(api_client, monkeypatch):
+    from cybotech.api.v1 import security
+    from cybotech.services.red_team import graph
+
+    monkeypatch.setenv("CYBOTECH_MODEL_MODE", "live")
+    monkeypatch.setattr(security, "runtime_client", lambda: object())
+    monkeypatch.setattr(graph, "OpenAIAdversarialProvider", lambda client, model: object())
+
+    class FakeGraph:
+        def __init__(self, provider):
+            pass
+
+        def run(self, case_id, configuration, mode):
+            assert mode == "live_model"
+            return graph.AttackOutcome(
+                scenario_id=case_id,
+                configuration=configuration,
+                status="completed",
+                termination_reason="completed",
+            )
+
+    monkeypatch.setattr(graph, "VibeHackerGraph", FakeGraph)
+    response = api_client.post(
+        "/api/v1/lab/generated-attack", json={"case_id": "memory_poisoning-00"}
+    )
+    assert response.status_code == 200
+    assert response.json()["victim_model"] == "scripted"
+
+
+def test_security_events_filter_by_task(api_client):
+    for task_id in ("task-one", "task-two"):
+        response = api_client.post(
+            "/api/v1/assistant/run",
+            json={"task": "Summarize", "session_id": "demo", "task_id": task_id},
+        )
+        assert response.status_code == 200
+    events = api_client.get("/api/v1/security-events?correlation_id=task-one").json()
+    assert events["items"]
+    assert all(event["correlation_id"] == "task-one" for event in events["items"])
+    assert events["total"] == len(events["items"])
+
+
 def test_action_api_denies_unapproved_recipient_and_persists_event(api_client):
     response = api_client.post(
         "/api/v1/actions/authorize",
