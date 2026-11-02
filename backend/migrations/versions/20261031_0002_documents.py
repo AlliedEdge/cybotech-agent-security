@@ -1,8 +1,13 @@
-"""Untrusted document evidence and pgvector chunk retrieval."""
+"""Untrusted document evidence and Qdrant chunk retrieval.
+
+Note: Vector embeddings for document chunks are stored in Qdrant
+      (cybotech_documents collection), not in PostgreSQL.
+      The `embedding` column has been removed from document_chunks.
+      `embedding_model` is retained as audit metadata.
+"""
 
 import sqlalchemy as sa
 from alembic import op
-from pgvector.sqlalchemy import Vector
 
 revision = "20261031_0002"
 down_revision = "20261030_0001"
@@ -39,7 +44,7 @@ def upgrade() -> None:
         sa.Column("content_hash", sa.String(64), nullable=False),
         sa.Column("source_metadata", sa.JSON(), nullable=False),
         sa.Column("trust_label", sa.String(20), nullable=False),
-        sa.Column("embedding", Vector(384), nullable=False),
+        # embedding_model: records which model produced the Qdrant vector for this chunk.
         sa.Column("embedding_model", sa.String(200), nullable=False),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False

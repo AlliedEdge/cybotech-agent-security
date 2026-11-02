@@ -22,6 +22,7 @@ from cybotech.agents.contracts import (
 from cybotech.agents.graph import PrimaryAssistantGraph
 from cybotech.infrastructure.database.models import AuditEvent
 from cybotech.infrastructure.sandbox.tools import SandboxDispatcher
+from cybotech.infrastructure.vector.qdrant import QdrantStore
 from cybotech.services.documents.service import DocumentService
 from cybotech.services.memory_guard.service import MemoryGuard, MemoryReviewer
 from cybotech.services.policy_gateway.service import PolicyGateway
@@ -42,17 +43,17 @@ class MemoryGuardPort:
         source_resolver: SourceResolver,
         embedder: Embedder,
         reviewer: MemoryReviewer | None = None,
+        vector_store: QdrantStore | None = None,
     ) -> None:
-        self.guard = MemoryGuard(db, source_resolver, embedder, reviewer)
+        self.guard = MemoryGuard(db, source_resolver, embedder, reviewer, vector_store)
 
     def propose_memory(self, proposal: MemoryProposal) -> MemoryDecision:
         return self.guard.propose_memory(proposal)
 
 
 class TrustedRetrievalPort:
-    def __init__(self, db: Session, embedder: Embedder) -> None:
-        self.db = db
-        self.service = RetrievalService(db, embedder)
+    def __init__(self, db: Session, embedder: Embedder, vector_store: QdrantStore) -> None:
+        self.service = RetrievalService(db, embedder, vector_store)
 
     def retrieve(self, query: RetrievalQuery) -> list[MemoryRecord]:
         rows = self.service.retrieve(
@@ -73,8 +74,8 @@ class TrustedRetrievalPort:
 
 
 class DocumentRetrievalAdapter:
-    def __init__(self, db: Session, embedder: Embedder) -> None:
-        self.service = DocumentService(db, embedder)
+    def __init__(self, db: Session, embedder: Embedder, vector_store: QdrantStore) -> None:
+        self.service = DocumentService(db, embedder, vector_store)
 
     def retrieve(self, query: str, session_id: str) -> list[DocumentEvidence]:
         return self.service.retrieve(query, session_id)
@@ -149,6 +150,7 @@ def build_persistent_assistant(
     db: Session,
     model: ModelProvider,
     embedder: Embedder,
+    vector_store: QdrantStore,
     documents: list[Document],
     source_resolver: SourceResolver,
     correlation_id: str,
@@ -156,7 +158,7 @@ def build_persistent_assistant(
     memory_reviewer: MemoryReviewer | None = None,
 ) -> Assistant:
     ports = build_security_ports(
-        db, embedder, source_resolver, correlation_id, reviewer, memory_reviewer
+        db, embedder, vector_store, source_resolver, correlation_id, reviewer, memory_reviewer
     )
     dispatcher = SandboxDispatcher(documents)
     return Assistant(
@@ -174,21 +176,22 @@ def build_persistent_graph(
     db: Session,
     model: ModelProvider,
     embedder: Embedder,
+    vector_store: QdrantStore,
     documents: list[Document],
     source_resolver: SourceResolver,
     correlation_id: str,
     reviewer: Reviewer | None = None,
     memory_reviewer: MemoryReviewer | None = None,
 ) -> PrimaryAssistantGraph:
-    """Build the registered assistant's LangGraph with the established security ports."""
+    """Build the registered assistant's LangGraph with Qdrant-backed security ports."""
     ports = build_security_ports(
-        db, embedder, source_resolver, correlation_id, reviewer, memory_reviewer
+        db, embedder, vector_store, source_resolver, correlation_id, reviewer, memory_reviewer
     )
     return PrimaryAssistantGraph(
         model=model,
         memory=ports.memory,
         retrieval=ports.retrieval,
-        document_retrieval=DocumentRetrievalAdapter(db, embedder),
+        document_retrieval=DocumentRetrievalAdapter(db, embedder, vector_store),
         sentinel=ports.sentinel,
         gateway=ports.gateway,
         dispatcher=SandboxDispatcher(documents),
@@ -199,16 +202,17 @@ def build_persistent_graph(
 def build_security_ports(
     db: Session,
     embedder: Embedder,
+    vector_store: QdrantStore,
     source_resolver: SourceResolver,
     correlation_id: str,
     reviewer: Reviewer | None = None,
     memory_reviewer: MemoryReviewer | None = None,
 ) -> SecurityPorts:
-    """Builds the Person A Assistant's existing ports without replacing its agent or tools."""
+    """Assemble security ports with Qdrant-backed memory and document retrieval."""
     sentinel = SentinelPortAdapter(reviewer)
     return SecurityPorts(
-        memory=MemoryGuardPort(db, source_resolver, embedder, memory_reviewer),
-        retrieval=TrustedRetrievalPort(db, embedder),
+        memory=MemoryGuardPort(db, source_resolver, embedder, memory_reviewer, vector_store),
+        retrieval=TrustedRetrievalPort(db, embedder, vector_store),
         sentinel=sentinel,
         gateway=PolicyGatewayPort(db, sentinel),
         events=PersistentEventPort(db, correlation_id),

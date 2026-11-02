@@ -32,7 +32,7 @@ def test_health_response_structure(client: TestClient) -> None:
 
     deps = data["dependencies"]
     assert "database" in deps
-    assert "pgvector" in deps
+    assert "vector_db" in deps
     assert "llm_provider" in deps
 
 

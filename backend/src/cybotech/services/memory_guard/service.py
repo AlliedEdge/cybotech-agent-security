@@ -18,6 +18,7 @@ from cybotech.infrastructure.database.models import (
     MemoryProvenance,
     MemoryStatus,
 )
+from cybotech.infrastructure.vector.qdrant import QdrantStore
 
 SourceContext = dict[str, Any]
 ProvenanceResolver = Callable[[str, str], SourceContext | None]
@@ -70,11 +71,13 @@ class MemoryGuard:
         provenance_resolver: ProvenanceResolver | None = None,
         embedder: MemoryEmbedder | None = None,
         reviewer: MemoryReviewer | None = None,
+        vector_store: QdrantStore | None = None,
     ) -> None:
         self.db = db
         self.provenance_resolver = provenance_resolver
         self.embedder = embedder
         self.reviewer = reviewer
+        self.vector_store = vector_store
 
     def propose_memory(self, proposal: MemoryProposal) -> MemoryDecision:
         if (
@@ -94,7 +97,6 @@ class MemoryGuard:
             )
 
         content = proposal.content.strip()
-        # The source trust is supplied by the application provenance resolver, never by content.
         source = self._source_context(proposal)
         if source is None:
             state, reason, trust = MemoryStatus.quarantined, "provenance_missing", "unverified"
@@ -126,6 +128,15 @@ class MemoryGuard:
             except Exception:
                 state, reason = MemoryStatus.quarantined, "semantic_review_unavailable"
 
+        # Compute embedding (stored in Qdrant, model name kept in Postgres for audit).
+        vector: list[float] | None = None
+        embedding_model: str | None = None
+        if self.embedder is not None:
+            vector = self.embedder.embed(content)
+            if len(vector) != 384:
+                raise ValueError("embedding dimension must be 384")
+            embedding_model = self.embedder.model_name
+
         record = Memory(
             content=content,
             category=proposal.claimed_category,
@@ -136,15 +147,11 @@ class MemoryGuard:
             created_by=proposal.proposed_by,
             proposal_key=key,
             decision_reason=reason,
+            embedding_model=embedding_model,
         )
-        if self.embedder is not None:
-            vector = self.embedder.embed(content)
-            if len(vector) != 384:
-                raise ValueError("embedding dimension must be 384")
-            record.embedding = vector
-            record.embedding_model = self.embedder.model_name
         self.db.add(record)
-        self.db.flush()
+        self.db.flush()  # assigns record.id
+
         self.db.add(
             MemoryProvenance(
                 memory_id=record.id,
@@ -168,12 +175,28 @@ class MemoryGuard:
             )
         )
         self.db.commit()
+
+        # Upsert vector into Qdrant only for pending/trusted memories that will be retrieved.
+        # Quarantined memories are intentionally excluded from the vector index.
+        if (
+            vector is not None
+            and self.vector_store is not None
+            and state != MemoryStatus.quarantined
+        ):
+            self.vector_store.upsert_memory(
+                memory_id=str(record.id),
+                vector=vector,
+                payload={
+                    "embedding_model": embedding_model,
+                    "category": record.category,
+                    "source_type": record.source_type,
+                    "status": state.value,
+                },
+            )
+
         return MemoryDecision(proposal_id=str(record.id), status=state.value, reason=reason)
 
     def _source_context(self, proposal: MemoryProposal) -> SourceContext | None:
-        # Assistant contract carries source id and raw text, not authority claims. Only recognize
-        # explicit source ids from the documented synthetic demo namespace; API proposals can
-        # supply a provenance entry through the adapter's source resolver.
         resolver = self.provenance_resolver
         if resolver:
             return resolver(proposal.source_document_id, proposal.raw_context)
@@ -195,16 +218,34 @@ class MemoryGuard:
                 "only pending or explicitly quarantined records can be reviewed as trusted"
             )
         previous = row.status.value
+
         if target == MemoryStatus.trusted:
-            if row.embedding is None:
-                if self.embedder is None:
-                    raise ValueError("embedding provider required before memory approval")
-                vector = self.embedder.embed(row.content)
-                if len(vector) != 384:
-                    raise ValueError("embedding dimension must be 384")
-                row.embedding = vector
-                row.embedding_model = self.embedder.model_name
+            # Ensure a vector exists in Qdrant when approving a memory.
+            if self.embedder is None:
+                raise ValueError("embedding provider required before memory approval")
+            if self.vector_store is None:
+                raise ValueError("vector store required before memory approval")
+            vector = self.embedder.embed(row.content)
+            if len(vector) != 384:
+                raise ValueError("embedding dimension must be 384")
+            row.embedding_model = self.embedder.model_name
             row.provenance = {**row.provenance, "review_verified": True, "reviewed_by": actor}
+            self.vector_store.upsert_memory(
+                memory_id=str(row.id),
+                vector=vector,
+                payload={
+                    "embedding_model": self.embedder.model_name,
+                    "category": row.category,
+                    "source_type": row.source_type,
+                    "status": MemoryStatus.trusted.value,
+                },
+            )
+
+        if target in {MemoryStatus.revoked, MemoryStatus.rejected, MemoryStatus.quarantined}:
+            # Remove from vector index so the memory can never be retrieved after revocation.
+            if self.vector_store is not None:
+                self.vector_store.delete_memory(str(row.id))
+
         row.status, row.reviewer, row.decision_reason = target, actor, reason
         if target == MemoryStatus.revoked:
             row.revoked_at, row.revoked_reason = datetime.now(UTC), reason

@@ -2,11 +2,14 @@
 
 Revision ID: 20261030_0001
 Revises:
+
+Note: Vector embeddings are stored in Qdrant, not in PostgreSQL.
+      The `embedding` column has been removed from the memories table.
+      `embedding_model` is retained as audit metadata.
 """
 
 import sqlalchemy as sa
 from alembic import op
-from pgvector.sqlalchemy import Vector
 
 revision = "20261030_0001"
 down_revision = None
@@ -15,7 +18,6 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
     status = sa.Enum(
         "pending", "trusted", "quarantined", "rejected", "expired", "revoked", name="memory_status"
     )
@@ -40,7 +42,7 @@ def upgrade() -> None:
         sa.Column("revoked_reason", sa.Text()),
         sa.Column("reviewer", sa.String(120)),
         sa.Column("decision_reason", sa.Text(), nullable=False),
-        sa.Column("embedding", Vector(384)),
+        # embedding_model: records which model produced the Qdrant vector for this memory.
         sa.Column("embedding_model", sa.String(200)),
         sa.Column("proposal_key", sa.String(64), nullable=False, unique=True),
     )

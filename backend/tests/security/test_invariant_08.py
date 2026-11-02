@@ -6,7 +6,7 @@ from cybotech.services.retrieval.service import RetrievalService
 from .conftest import FixedEmbedder, stored_memory
 
 
-def test_nontrusted_expired_and_revoked_memories_never_reach_retrieval(db):
+def test_nontrusted_expired_and_revoked_memories_never_reach_retrieval(db, vector_store):
     db.add_all(
         [
             stored_memory(
@@ -32,4 +32,4 @@ def test_nontrusted_expired_and_revoked_memories_never_reach_retrieval(db):
         ]
     )
     db.commit()
-    assert RetrievalService(db, FixedEmbedder()).retrieve("synthetic") == []
+    assert RetrievalService(db, FixedEmbedder(), vector_store).retrieve("synthetic") == []

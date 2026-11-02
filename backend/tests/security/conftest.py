@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from cybotech.agents.contracts import ActionProposal, MemoryProposal
 from cybotech.infrastructure.database.models import Base, Memory, MemoryStatus
+from cybotech.infrastructure.vector.qdrant import make_in_memory_store
 from cybotech.services.sentinel.service import Sentinel, SentinelFinding
 
 
@@ -21,6 +22,11 @@ def db():
     with Session(engine, expire_on_commit=False) as session:
         yield session
     engine.dispose()
+
+
+@pytest.fixture
+def vector_store():
+    return make_in_memory_store()
 
 
 class FixedEmbedder:
@@ -70,11 +76,23 @@ def stored_memory(*, key: str, status: MemoryStatus, provenance: dict, **changes
         "created_by": "security-test",
         "proposal_key": key,
         "decision_reason": "fixture",
-        "embedding": [1.0] + [0.0] * 383,
         "embedding_model": FixedEmbedder.model_name,
     }
     values.update(changes)
     return Memory(**values)
+
+
+def index_in_qdrant(vector_store, memory: Memory) -> None:
+    """Upsert a memory's vector into Qdrant so RetrievalService can find it."""
+    vector_store.upsert_memory(
+        memory_id=str(memory.id),
+        vector=FixedEmbedder().embed(memory.content),
+        payload={
+            "embedding_model": memory.embedding_model,
+            "category": memory.category,
+            "source_type": memory.source_type,
+        },
+    )
 
 
 def completed_finding() -> SentinelFinding:

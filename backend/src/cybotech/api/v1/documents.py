@@ -12,7 +12,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from cybotech.api.v1.security import require_local_security_access, runtime_embedder
+from cybotech.api.v1.security import (
+    require_local_security_access,
+    runtime_embedder,
+    runtime_qdrant_store,
+)
 from cybotech.infrastructure.database.models import DocumentChunk, DocumentRecord
 from cybotech.infrastructure.database.session import get_db
 from cybotech.services.documents.service import MAX_BYTES, SUPPORTED_TYPES, DocumentService
@@ -59,7 +63,7 @@ def ingest(body: IngestIn, db: DbSession) -> dict[str, Any]:
     if len(data) > MAX_BYTES:
         raise HTTPException(413, "Document exceeds 1MB limit")
     try:
-        row = DocumentService(db, runtime_embedder()).ingest(
+        row = DocumentService(db, runtime_embedder(), runtime_qdrant_store()).ingest(
             body.title, body.content_type, data, body.session_id
         )
     except (UnicodeDecodeError, ValueError, OSError) as error:
@@ -111,12 +115,17 @@ def chunks(document_id: uuid.UUID, session_id: str, db: DbSession) -> dict[str, 
 
 @router.post("/documents/retrieve")
 def retrieve(body: RetrieveIn, db: DbSession) -> dict[str, Any]:
-    rows = DocumentService(db, runtime_embedder()).retrieve(body.query, body.session_id, body.top_k)
+    rows = (
+        DocumentService(db, runtime_embedder(), runtime_qdrant_store())
+        .retrieve(body.query, body.session_id, body.top_k)
+    )
     return {"items": [row.model_dump() for row in rows]}
 
 
 @router.delete("/documents/{document_id}")
 def delete_document(document_id: uuid.UUID, session_id: str, db: DbSession) -> dict[str, bool]:
-    if not DocumentService(db, runtime_embedder()).delete(document_id, session_id):
+    if not DocumentService(db, runtime_embedder(), runtime_qdrant_store()).delete(
+        document_id, session_id
+    ):
         raise HTTPException(404, "Document not found")
     return {"deleted": True}

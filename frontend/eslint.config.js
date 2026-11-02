@@ -8,6 +8,16 @@ export default [
     files: ["**/*.ts", "**/*.tsx"],
     languageOptions: { parser, parserOptions: { ecmaVersion: "latest", sourceType: "module", ecmaFeatures: { jsx: true } } },
     plugins: { "@typescript-eslint": typescript, "react-hooks": hooks },
-    rules: { ...typescript.configs.recommended.rules, ...hooks.configs.recommended.rules },
+    rules: {
+      ...typescript.configs.recommended.rules,
+      ...hooks.configs.recommended.rules,
+      "@typescript-eslint/no-unused-vars": ["error", {
+        "vars": "all",
+        "args": "after-used",
+        "argsIgnorePattern": "^_",
+        "varsIgnorePattern": "^_",
+        "ignoreRestSiblings": true
+      }]
+    },
   },
 ];

@@ -11,6 +11,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from cybotech.infrastructure.database.models import Memory, MemoryStatus
+from cybotech.infrastructure.vector.qdrant import make_in_memory_store
 from cybotech.services.retrieval.service import RetrievalService
 
 pytestmark = pytest.mark.integration
@@ -58,7 +59,6 @@ def test_pgvector_candidates_are_filtered_by_canonical_state() -> None:
                         created_by="integration-test",
                         proposal_key=trusted_key,
                         decision_reason="approved",
-                        embedding=FixedEmbedder().embed("schedule"),
                         embedding_model=FixedEmbedder.model_name,
                     ),
                     Memory(
@@ -72,13 +72,23 @@ def test_pgvector_candidates_are_filtered_by_canonical_state() -> None:
                         created_by="integration-test",
                         proposal_key=quarantined_key,
                         decision_reason="quarantined",
-                        embedding=FixedEmbedder().embed("schedule"),
                         embedding_model=FixedEmbedder.model_name,
                     ),
                 ]
             )
             db.commit()
-            rows = RetrievalService(db, FixedEmbedder()).retrieve("schedule", max_results=5)
+            vector_store = make_in_memory_store()
+            vector_store.upsert_memory(
+                memory_id=str(trusted_id),
+                vector=FixedEmbedder().embed("schedule"),
+                payload={"embedding_model": FixedEmbedder.model_name, "category": "fact", "source_type": "internal"},
+            )
+            vector_store.upsert_memory(
+                memory_id=str(quarantined_id),
+                vector=FixedEmbedder().embed("schedule"),
+                payload={"embedding_model": FixedEmbedder.model_name, "category": "fact", "source_type": "email"},
+            )
+            rows = RetrievalService(db, FixedEmbedder(), vector_store).retrieve("schedule", max_results=5)
             assert [str(row.id) for row in rows] == [str(trusted_id)]
     finally:
         with Session(engine) as db:

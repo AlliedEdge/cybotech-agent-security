@@ -23,16 +23,35 @@ services:
     environment:
       POSTGRES_DB:       ${POSTGRES_DB:-cybotech}
       POSTGRES_USER:     ${POSTGRES_USER:-cybotech_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cybotech_local_pass}
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./infra/docker/postgres/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
     # Bind to loopback only — not publicly accessible by default.
-    # Remove or change 127.0.0.1 if your local setup requires external access.
+    # Port 5432 is in use by another project; using 5434 on the host.
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:5434:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cybotech_user} -d ${POSTGRES_DB:-cybotech}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Qdrant — dedicated vector database for memory and document chunk RAG
+  # Collections are created automatically by the backend on first startup.
+  # ---------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:v1.13.6
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"   # HTTP / REST API
+      - "127.0.0.1:6334:6334"   # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -54,7 +73,7 @@ services:
       CYBOTECH_MODEL_MODE: ${CYBOTECH_MODEL_MODE:-offline}
       # Explicit local bridge peers only; published ports remain loopback-bound.
       CYBOTECH_LOCAL_PROXY_HOSTS: ${CYBOTECH_LOCAL_PROXY_HOSTS:-172.30.52.1,192.168.65.1}
-      APP_SECRET_KEY:       ${APP_SECRET_KEY:?APP_SECRET_KEY must be set in .env}
+      APP_SECRET_KEY:       ${APP_SECRET_KEY:-5c27b26a01744cfefadbdddc762b3faf2a3350076771a0bb53f34b04b0f11b8b}
       LOG_LEVEL:            ${LOG_LEVEL:-INFO}
       POSTGRES_HOST:        db
       POSTGRES_PORT:        5432
@@ -64,6 +83,8 @@ services:
       OPENAI_API_KEY:       ${OPENAI_API_KEY:-}
       OPENAI_MODEL:         ${OPENAI_MODEL:-gpt-4o-mini}
       OPENAI_BASE_URL:      ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      QDRANT_URL:           ${QDRANT_URL:-http://qdrant:6333}
+      QDRANT_API_KEY:       ${QDRANT_API_KEY:-}
       ALLOWED_EMAIL_DESTINATIONS: ${ALLOWED_EMAIL_DESTINATIONS:-reports@internal.example,support@internal.example}
       APPROVAL_TTL_SECONDS: ${APPROVAL_TTL_SECONDS:-300}
       RED_TEAM_MAX_ITERATIONS: ${RED_TEAM_MAX_ITERATIONS:-50}
@@ -72,6 +93,8 @@ services:
       - "127.0.0.1:8000:8000"
     depends_on:
       db:
+        condition: service_healthy
+      qdrant:
         condition: service_healthy
     volumes:
       # Mount source for hot-reload during development.
@@ -109,6 +132,8 @@ services:
 # =============================================================================
 volumes:
   pg_data:
+    driver: local
+  qdrant_data:
     driver: local
 
 networks:

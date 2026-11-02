@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from cybotech.agents.contracts import ActionProposal, MemoryProposal
 from cybotech.infrastructure.database.models import Base, Memory, MemoryStatus
+from cybotech.infrastructure.vector.qdrant import make_in_memory_store
 from cybotech.services.integration.ports import PolicyGatewayPort, SentinelPortAdapter
 from cybotech.services.memory_guard.service import MemoryGuard
 from cybotech.services.policy_gateway.service import PolicyGateway
@@ -61,7 +62,12 @@ def test_embedded_instructions_are_quarantined(text, reason, db):
 
 
 def test_lifecycle_forbids_promotion_of_pending_and_revoked(db):
-    guard = MemoryGuard(db, lambda *_: None, FixedEmbedder())
+    guard = MemoryGuard(
+        db,
+        lambda *_: None,
+        FixedEmbedder(),
+        vector_store=make_in_memory_store(),
+    )
     result = guard.propose_memory(proposal())
     row = db.get(Memory, __import__("uuid").UUID(result.proposal_id))
     guard.transition(row.id, MemoryStatus.trusted, "reviewer", "approve")
@@ -216,7 +222,6 @@ def _stored_memory(
         revoked_at=revoked_at,
         expires_at=expires_at,
         decision_reason="test fixture",
-        embedding=[1.0] + [0.0] * 383,
         embedding_model="unit-384",
     )
 
@@ -233,14 +238,27 @@ def test_retrieval_excludes_revoked_stale_vectors_and_missing_provenance(db):
     db.add_all([revoked, missing, trusted])
     db.commit()
 
-    result = RetrievalService(db, FixedEmbedder()).retrieve("query")
+    vector_store = make_in_memory_store()
+    fixed_vector = FixedEmbedder().embed("query")
+    vector_store.upsert_memory(
+        memory_id=str(trusted.id),
+        vector=fixed_vector,
+        payload={"embedding_model": "unit-384", "category": "fact", "source_type": "internal"},
+    )
+    vector_store.upsert_memory(
+        memory_id=str(revoked.id),
+        vector=fixed_vector,
+        payload={"embedding_model": "unit-384", "category": "fact", "source_type": "internal"},
+    )
+    result = RetrievalService(db, FixedEmbedder(), vector_store).retrieve("query")
     assert [row.proposal_key for row in result] == ["trusted"]
 
 
 def test_retrieval_handles_empty_query_and_invalid_vector_dimensions(db):
-    assert RetrievalService(db, FixedEmbedder()).retrieve("   ") == []
+    vs = make_in_memory_store()
+    assert RetrievalService(db, FixedEmbedder(), vs).retrieve("   ") == []
     with pytest.raises(ValueError, match="dimension must be 384"):
-        RetrievalService(db, FixedEmbedder(vector=[1.0, 2.0])).retrieve("query")
+        RetrievalService(db, FixedEmbedder(vector=[1.0, 2.0]), vs).retrieve("query")
 
 
 def test_retrieval_propagates_embedding_and_database_failures():
@@ -250,12 +268,19 @@ def test_retrieval_propagates_embedding_and_database_failures():
         def scalars(self, _statement):
             raise RuntimeError("database unavailable")
 
+    class FakeVectorStore:
+        """Returns a fake Qdrant hit so the code proceeds to the DB query."""
+
+        def search_memories(self, vector, top_k, filter_payload=None):
+            return [("00000000-0000-0000-0000-000000000001", 1.0, {})]
+
     with pytest.raises(TimeoutError, match="embedding unavailable"):
         RetrievalService(
-            BrokenDatabase(), FixedEmbedder(failure=TimeoutError("embedding unavailable"))
+            BrokenDatabase(), FixedEmbedder(failure=TimeoutError("embedding unavailable")),
+            make_in_memory_store(),
         ).retrieve("query")
     with pytest.raises(RuntimeError, match="database unavailable"):
-        RetrievalService(BrokenDatabase(), FixedEmbedder()).retrieve("query")
+        RetrievalService(BrokenDatabase(), FixedEmbedder(), FakeVectorStore()).retrieve("query")
 
 
 def test_memory_proposal_embedding_failure_does_not_persist(db):

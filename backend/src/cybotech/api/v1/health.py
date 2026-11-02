@@ -6,7 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from cybotech import __version__
@@ -20,7 +20,7 @@ router = APIRouter(tags=["health"])
 def health_check(db: Annotated[Session, Depends(get_db)]) -> JSONResponse:
     dependencies = {
         "database": "unhealthy",
-        "pgvector": "not_applicable",
+        "vector_db": "unhealthy",
         "llm_provider": "offline"
         if os.getenv("CYBOTECH_MODEL_MODE", "offline") == "offline"
         else "configured_not_probed"
@@ -30,13 +30,15 @@ def health_check(db: Annotated[Session, Depends(get_db)]) -> JSONResponse:
     try:
         db.execute(select(Memory.id).limit(0))
         dependencies["database"] = "healthy"
-        if db.bind is not None and db.bind.dialect.name == "postgresql":
-            installed = db.scalar(
-                text("SELECT extversion FROM pg_extension WHERE extname='vector'")
-            )
-            dependencies["pgvector"] = "healthy" if installed else "unhealthy"
     except Exception:
         db.rollback()
+
+    try:
+        from cybotech.api.v1.security import runtime_qdrant_store
+        dependencies["vector_db"] = runtime_qdrant_store().health()
+    except Exception:
+        dependencies["vector_db"] = "unhealthy"
+
     healthy = "unhealthy" not in dependencies.values()
     return JSONResponse(
         status_code=200 if healthy else 503,

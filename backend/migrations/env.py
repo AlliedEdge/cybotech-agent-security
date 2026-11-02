@@ -9,6 +9,14 @@ from __future__ import annotations
 
 import os
 from logging.config import fileConfig
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load backend/.env so DATABASE_URL is available when running alembic directly
+_env_file = Path(__file__).resolve().parent.parent / ".env"
+if _env_file.exists():
+    load_dotenv(_env_file, override=False)
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool

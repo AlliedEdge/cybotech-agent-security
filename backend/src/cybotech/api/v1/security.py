@@ -22,6 +22,11 @@ from cybotech.infrastructure.database.session import get_db
 from cybotech.infrastructure.llm.offline import LocalAssistantModel, LocalEmbedder
 from cybotech.infrastructure.llm.providers import OpenAIProvider
 from cybotech.infrastructure.sandbox.tools import SandboxDispatcher
+from cybotech.infrastructure.vector.qdrant import (
+    QdrantStore,
+    make_in_memory_store,
+    make_remote_store,
+)
 from cybotech.services.integration.ports import Reviewer, build_persistent_graph
 from cybotech.services.integration.sources import registered_sources, resolve_registered_source
 from cybotech.services.memory_guard.model import ModelMemoryReviewer
@@ -32,6 +37,42 @@ from cybotech.services.red_team.lab import Configuration, run_experiment
 from cybotech.services.retrieval.service import Embedder, OpenAIEmbedder
 from cybotech.services.sentinel.model import ModelSentinel
 from cybotech.services.sentinel.service import Sentinel
+
+# ---------------------------------------------------------------------------
+# Module-level Qdrant store singleton — created once, shared per process.
+# Replaced by make_in_memory_store() in local.py for offline/SQLite mode.
+# ---------------------------------------------------------------------------
+_qdrant_store: QdrantStore | None = None
+_qdrant_store_lock = __import__("threading").Lock()
+
+
+def runtime_qdrant_store() -> QdrantStore:
+    """
+    Return the process-scoped QdrantStore, creating it on first call.
+
+    - If QDRANT_URL is set: connect to the running Qdrant server (Docker / cloud).
+    - Otherwise: use an embedded in-memory instance (no server needed, offline dev).
+
+    The same instance is reused across requests so collections are only
+    created once and the connection is not re-established on every call.
+    """
+    global _qdrant_store
+    if _qdrant_store is not None:
+        return _qdrant_store
+    with _qdrant_store_lock:
+        if _qdrant_store is None:
+            url = os.getenv("QDRANT_URL")
+            api_key = os.getenv("QDRANT_API_KEY")
+            _qdrant_store = (
+                make_remote_store(url, api_key) if url else make_in_memory_store()
+            )
+    return _qdrant_store  # type: ignore[return-value]
+
+
+def set_qdrant_store(store: QdrantStore) -> None:
+    """Override the module-level store — used by local.py and tests."""
+    global _qdrant_store
+    _qdrant_store = store
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -207,7 +248,8 @@ def propose_memory(body: ProposalIn, db: DbSession) -> dict[str, str]:
         raw_context=body.source_context,
     )
     guard = MemoryGuard(
-        db, resolve_registered_source, runtime_embedder(), runtime_memory_reviewer()
+        db, resolve_registered_source, runtime_embedder(), runtime_memory_reviewer(),
+        runtime_qdrant_store(),
     )
     # Trust is an application-side decision; caller-supplied trust labels are intentionally ignored.
     result = guard.propose_memory(proposal)
@@ -261,9 +303,11 @@ def _transition(
     memory_id: uuid.UUID, status: MemoryStatus, actor: str, reason: str, db: Session
 ) -> dict[str, Any]:
     try:
-        row = MemoryGuard(db, embedder=runtime_embedder()).transition(
-            memory_id, status, actor, reason
-        )
+        row = MemoryGuard(
+            db,
+            embedder=runtime_embedder(),
+            vector_store=runtime_qdrant_store(),
+        ).transition(memory_id, status, actor, reason)
     except LookupError:
         raise HTTPException(404, "Memory not found") from None
     except ValueError as exc:
@@ -399,6 +443,7 @@ def create_runtime_graph(
         if runtime_mode() == "live"
         else LocalAssistantModel(),
         runtime_embedder(),
+        runtime_qdrant_store(),
         documents,
         resolve_registered_source,
         task_id,

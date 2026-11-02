@@ -9,6 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
+from cybotech.infrastructure.vector.qdrant import make_in_memory_store
 from cybotech.services.documents.service import DocumentService
 
 DATABASE_URL = os.getenv("CYBOTECH_TEST_DATABASE_URL")
@@ -33,7 +34,7 @@ def test_pgvector_document_retrieval_is_session_scoped_and_honors_deletion() -> 
     engine = create_engine(DATABASE_URL, pool_pre_ping=True)
     try:
         with Session(engine) as db:
-            service = DocumentService(db, FixedEmbedder())
+            service = DocumentService(db, FixedEmbedder(), make_in_memory_store())
             document = service.ingest(
                 "schedule.txt",
                 "text/plain",

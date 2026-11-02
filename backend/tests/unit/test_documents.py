@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from cybotech.infrastructure.database.models import Base, DocumentChunk
+from cybotech.infrastructure.vector.qdrant import make_in_memory_store
 from cybotech.services.documents.service import DocumentService, chunk_text
 
 
@@ -24,7 +25,7 @@ def test_document_ingestion_scope_deletion_and_untrusted_retrieval():
     engine = create_engine("sqlite://", poolclass=StaticPool)
     Base.metadata.create_all(engine)
     with Session(engine) as db:
-        service = DocumentService(db, Embedder())
+        service = DocumentService(db, Embedder(), make_in_memory_store())
         row = service.ingest("notes.md", "text/markdown", b"# note\nneedle evidence", "session-a")
         assert (
             service.ingest("notes.md", "text/markdown", b"# note\nneedle evidence", "session-a").id

@@ -5,7 +5,6 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pgvector.sqlalchemy import Vector
 from sqlalchemy import JSON, DateTime, Enum, ForeignKey, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -49,7 +48,8 @@ class Memory(Base):
     revoked_reason: Mapped[Any] = mapped_column(Text, nullable=True)
     reviewer: Mapped[Any] = mapped_column(String(120), nullable=True)
     decision_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    embedding: Mapped[Any] = mapped_column(Vector(384).with_variant(JSON, "sqlite"), nullable=True)
+    # embedding_model is kept so retrieval can verify vector space consistency.
+    # The actual vector bytes now live in Qdrant (cybotech_memories collection).
     embedding_model: Mapped[Any] = mapped_column(String(200), nullable=True)
     proposal_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
 
@@ -116,6 +116,12 @@ class DocumentRecord(Base):
 
 
 class DocumentChunk(Base):
+    """
+    Stores document chunk text and metadata in PostgreSQL.
+    Vector embeddings for these chunks are stored in Qdrant
+    (cybotech_documents collection), keyed by str(id).
+    """
+
     __tablename__ = "document_chunks"
     __table_args__ = (
         Index("ix_document_chunks_document_ordinal", "document_id", "ordinal", unique=True),
@@ -130,7 +136,7 @@ class DocumentChunk(Base):
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     source_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     trust_label: Mapped[str] = mapped_column(String(20), nullable=False, default="untrusted")
-    embedding: Mapped[Any] = mapped_column(Vector(384).with_variant(JSON, "sqlite"), nullable=False)
+    # embedding_model kept for audit / cross-model guard; vector lives in Qdrant.
     embedding_model: Mapped[str] = mapped_column(String(200), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

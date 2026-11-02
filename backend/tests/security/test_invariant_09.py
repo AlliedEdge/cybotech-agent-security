@@ -4,7 +4,7 @@ from cybotech.services.retrieval.service import RetrievalService
 from .conftest import FixedEmbedder, stored_memory
 
 
-def test_high_similarity_does_not_establish_trust(db):
+def test_high_similarity_does_not_establish_trust(db, vector_store):
     db.add(
         stored_memory(
             key="untrusted-best-match",
@@ -13,4 +13,4 @@ def test_high_similarity_does_not_establish_trust(db):
         )
     )
     db.commit()
-    assert RetrievalService(db, FixedEmbedder()).retrieve("synthetic") == []
+    assert RetrievalService(db, FixedEmbedder(), vector_store).retrieve("synthetic") == []
