@@ -135,3 +135,62 @@ class DocumentChunk(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class VectorSyncStatus(enum.StrEnum):
+    pending = "pending"
+    processing = "processing"
+    completed = "completed"
+    failed = "failed"
+
+
+class VectorSyncOperation(enum.StrEnum):
+    upsert = "upsert"
+    delete = "delete"
+
+
+class VectorSyncOutbox(Base):
+    """Transactional outbox for PostgreSQL → Qdrant synchronisation.
+
+    Every mutation that should produce a vector change is recorded here in the
+    SAME PostgreSQL transaction as the canonical record write.  A background
+    dispatcher reads pending rows, applies them to Qdrant, and marks them
+    completed.  Failed rows remain retryable; they are never silently discarded.
+
+    Idempotency: the dispatcher uses the deterministic Qdrant point ID derived
+    from record_id so repeated delivery of the same event is safe.
+    """
+
+    __tablename__ = "vector_sync_outbox"
+    __table_args__ = (
+        Index("ix_vsync_status_created", "status", "created_at"),
+        Index("ix_vsync_record", "collection_name", "record_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # Which Qdrant collection this event targets.
+    collection_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    # The canonical PostgreSQL record UUID (chunk_id or memory_id) as a string.
+    record_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    # "upsert" or "delete"
+    operation: Mapped[VectorSyncOperation] = mapped_column(
+        Enum(VectorSyncOperation, name="vector_sync_operation"), nullable=False
+    )
+    # Serialised vector payload (JSON list of floats). NULL for delete operations.
+    vector_payload: Mapped[Any] = mapped_column(JSON, nullable=True)
+    # Serialised metadata payload (JSON dict). NULL for delete operations.
+    metadata_payload: Mapped[Any] = mapped_column(JSON, nullable=True)
+    # Current status of this sync event.
+    status: Mapped[VectorSyncStatus] = mapped_column(
+        Enum(VectorSyncStatus, name="vector_sync_status"),
+        nullable=False,
+        default=VectorSyncStatus.pending,
+    )
+    # Number of delivery attempts made so far.
+    attempt_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    # Human-readable error from the last failed attempt.
+    last_error: Mapped[Any] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    processed_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=True)

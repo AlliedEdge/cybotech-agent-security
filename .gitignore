@@ -126,6 +126,8 @@ embeddings/cache/
 embeddings/*.npy
 embeddings/*.npz
 vector_store/
+# Keep the Cybotech source package under infrastructure
+!backend/src/cybotech/infrastructure/vector_store/
 local_models/
 experiment_outputs/
 # Synthetic fixtures ARE committed; large private datasets are not

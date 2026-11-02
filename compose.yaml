@@ -13,6 +13,49 @@
 services:
 
   # ---------------------------------------------------------------------------
+  # Qdrant 1.9 — dedicated vector database
+  #
+  # Connectivity: internal Docker network only.
+  # No public port binding, no Cloudflare Tunnel ingress.
+  # API-key authentication enforced via QDRANT__SERVICE__API_KEY.
+  # Persistent named volume: qdrant_data.
+  #
+  # Local administration (read-only dashboard, no writes):
+  #   docker compose exec qdrant sh
+  #   curl -H "api-key: $QDRANT_API_KEY" http://qdrant:6333/collections
+  #
+  # Backup:
+  #   docker compose exec qdrant sh -c \
+  #     'curl -s -XPOST -H "api-key: $QDRANT__SERVICE__API_KEY" \
+  #       http://localhost:6333/snapshots'
+  #   docker compose cp qdrant:/qdrant/snapshots ./backups/
+  #
+  # Restore:
+  #   docker compose cp ./backups/<snapshot>.snapshot qdrant:/qdrant/snapshots/
+  #   curl -XPOST -H "api-key: <key>" \
+  #     http://localhost:6334/collections/<name>/snapshots/recover \
+  #     -H "Content-Type: application/json" \
+  #     -d '{"location": "file:///qdrant/snapshots/<snapshot>.snapshot"}'
+  # ---------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:v1.9.7
+    restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?QDRANT_API_KEY must be set in .env}
+      # Disable the gRPC port; HTTP-only is sufficient for this deployment.
+      QDRANT__SERVICE__GRPC_PORT: ""
+    volumes:
+      - qdrant_data:/qdrant/storage
+    # No ports block — Qdrant is reachable only via the internal Docker network
+    # on http://qdrant:6333. The backend connects using QDRANT_URL=http://qdrant:6333.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
   # PostgreSQL 16 with pgvector extension
   # Image: pgvector/pgvector ships pg16 + pgvector pre-installed.
   # pgvector extension is enabled in the init script below.
@@ -68,10 +111,19 @@ services:
       APPROVAL_TTL_SECONDS: ${APPROVAL_TTL_SECONDS:-300}
       RED_TEAM_MAX_ITERATIONS: ${RED_TEAM_MAX_ITERATIONS:-50}
       RED_TEAM_SEED:        ${RED_TEAM_SEED:-42}
+      # ── Qdrant vector database ──────────────────────────────────────────
+      VECTOR_DB_PROVIDER:   qdrant
+      QDRANT_URL:           http://qdrant:6333
+      QDRANT_API_KEY:       ${QDRANT_API_KEY:?QDRANT_API_KEY must be set in .env}
+      QDRANT_DOCUMENT_COLLECTION: ${QDRANT_DOCUMENT_COLLECTION:-cybotech_document_chunks}
+      QDRANT_MEMORY_COLLECTION:   ${QDRANT_MEMORY_COLLECTION:-cybotech_memory_vectors}
+      QDRANT_EMBEDDING_DIMENSIONS: ${QDRANT_EMBEDDING_DIMENSIONS:-384}
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
       db:
+        condition: service_healthy
+      qdrant:
         condition: service_healthy
     volumes:
       # Mount source for hot-reload during development.
@@ -109,6 +161,8 @@ services:
 # =============================================================================
 volumes:
   pg_data:
+    driver: local
+  qdrant_data:
     driver: local
 
 networks:

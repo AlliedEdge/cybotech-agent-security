@@ -22,6 +22,8 @@ dependencies = [
     "alembic>=1.13.3",
     "psycopg[binary]>=3.2.3",
     "pgvector>=0.3.5",
+    # Vector database
+    "qdrant-client>=1.9.0,<2.0",
     # Model provider
     "openai>=1.55.0",
     # Utilities

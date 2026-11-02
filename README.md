@@ -20,7 +20,7 @@ The project builds a fictional company's customer-support assistant, attacks it 
 
 > ⚠️ This project is under active development. It is not a production-ready security product. It does not claim universal protection against prompt injection.
 
-**Core stack:** Python 3.12 · FastAPI · PostgreSQL + pgvector · React · TypeScript · Vite · Docker · uv · pnpm
+**Core stack:** Python 3.12 · FastAPI · PostgreSQL + pgvector · **Qdrant** · React · TypeScript · Vite · Docker · uv · pnpm
 
 ---
 
@@ -471,6 +471,9 @@ graph TB
             FE["frontend\nReact/Vite dev server\n127.0.0.1:5173"]
             BE["backend\nFastAPI / Uvicorn\n127.0.0.1:8000"]
             DB2["db\nPostgreSQL 16 + pgvector\n127.0.0.1:5432 (loopback)"]
+            QD["qdrant
+Qdrant 1.9 — vector search
+internal network only"]
         end
 
         VOL[(pg_data\nNamed Volume\nPersistent)]
@@ -978,12 +981,10 @@ cd cybotech-agent-security
 cp .env.example .env
 cp backend/.env.example backend/.env
 cp frontend/.env.example frontend/.env
-# Edit .env — set POSTGRES_PASSWORD, APP_SECRET_KEY, OPENAI_API_KEY
-
-# 3. Start PostgreSQL with pgvector
-docker compose up -d db
-
-# 4. Run database migrations [planned — requires Week 1 implementation]
+# Edit .env — set POSTGRES_PASSWORD, APP_SECRET_KEY, OPENAI_API_KEY, QDRANT_API_KEY
+# 3. Start PostgreSQL and Qdrant
+docker compose up -d db qdrant
+# 4. Run database migrations (includes vector_sync_outbox table)
 make migrate
 
 # 5. Start the backend dev server [planned]

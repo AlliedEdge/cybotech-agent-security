@@ -6,7 +6,10 @@ import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from threading import Lock
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
+
+if TYPE_CHECKING:
+    from cybotech.infrastructure.vector_store.interface import VectorStore
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -318,8 +321,18 @@ def propose_memory(body: ProposalIn, db: DbSession) -> dict[str, str]:
         claimed_category=body.category,
         raw_context=body.source_context,
     )
+    vs = runtime_vector_store()
+    dispatcher = None
+    if vs is not None:
+        from cybotech.infrastructure.vector_store.outbox import VectorSyncDispatcher
+
+        dispatcher = VectorSyncDispatcher(db, vs)
     guard = MemoryGuard(
-        db, resolve_registered_source, runtime_embedder(), runtime_memory_reviewer()
+        db,
+        resolve_registered_source,
+        runtime_embedder(),
+        runtime_memory_reviewer(),
+        dispatcher=dispatcher,
     )
     # Trust is an application-side decision; caller-supplied trust labels are intentionally ignored.
     result = guard.propose_memory(proposal)
@@ -372,8 +385,14 @@ def memory_history(memory_id: uuid.UUID, db: DbSession) -> dict[str, Any]:
 def _transition(
     memory_id: uuid.UUID, status: MemoryStatus, actor: str, reason: str, db: Session
 ) -> dict[str, Any]:
+    vs = runtime_vector_store()
+    dispatcher = None
+    if vs is not None:
+        from cybotech.infrastructure.vector_store.outbox import VectorSyncDispatcher
+
+        dispatcher = VectorSyncDispatcher(db, vs)
     try:
-        row = MemoryGuard(db, embedder=runtime_embedder()).transition(
+        row = MemoryGuard(db, embedder=runtime_embedder(), dispatcher=dispatcher).transition(
             memory_id, status, actor, reason
         )
     except LookupError:
@@ -509,6 +528,27 @@ def runtime_configuration() -> dict[str, str]:
     return {"mode": runtime_mode(), "reviewer": reviewer, "tools": "simulated"}
 
 
+def runtime_vector_store() -> VectorStore | None:
+    """Return the production Qdrant VectorStore, or None if Qdrant is not configured.
+
+    When QDRANT_URL is not set the graph falls back to the Python-cosine path,
+    which keeps the application functional during the migration window.
+    """
+    qdrant_url = os.getenv("QDRANT_URL")
+    if not qdrant_url:
+        return None
+    try:
+        from cybotech.infrastructure.vector_store.qdrant_adapter import build_qdrant_vector_store
+
+        vs = build_qdrant_vector_store()
+        vs.ensure_collections()
+        return vs
+    except Exception:
+        # Qdrant unavailable — fall back to Python-cosine path rather than
+        # refusing to serve the API entirely.
+        return None
+
+
 def create_runtime_graph(db: Session, documents: list[Document], task_id: str) -> SupervisorGraph:
     return build_persistent_graph(
         db,
@@ -521,6 +561,7 @@ def create_runtime_graph(db: Session, documents: list[Document], task_id: str) -
         task_id,
         runtime_reviewer(),
         runtime_memory_reviewer(),
+        vector_store=runtime_vector_store(),
     )
 
 
