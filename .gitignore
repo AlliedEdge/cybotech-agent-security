@@ -208,3 +208,6 @@ docker-compose.override.yml
 
 # Local persistent demonstration data
 .local/
+
+# Editor configs
+opencode.jsonc
