@@ -9,6 +9,7 @@
         frontend-install frontend-dev frontend-build frontend-test \
         migrate migrate-create \
         red-team evaluate demo \
+        vector-migrate vector-reconcile vector-migrate-dry \
         clean clean-pyc clean-node
 
 # Default target
@@ -94,6 +95,47 @@ migrate-create: ## Create a new Alembic migration (use: make migrate-create MSG=
 
 migrate-down: ## Downgrade one migration step
 	cd backend && uv run alembic downgrade -1
+
+# -----------------------------------------------------------------------------
+# Qdrant vector migration and reconciliation
+#
+# DATABASE_URL and QDRANT_URL / QDRANT_API_KEY must be set (or exported).
+#
+# make vector-migrate-dry
+#   Inspect existing pgvector data and report counts without writing to Qdrant.
+#
+# make vector-migrate
+#   Export all pgvector embeddings from PostgreSQL into Qdrant.
+#   Idempotent and resumable — safe to re-run after a partial failure.
+#   Does NOT delete pgvector data.
+#
+# make vector-reconcile
+#   Detect missing/stale Qdrant vectors.  Read-only.
+#   Add ARGS="--repair" to re-upsert missing vectors.
+# -----------------------------------------------------------------------------
+vector-migrate-dry: ## Dry-run: report pgvector counts without writing to Qdrant
+	cd backend && \
+		DATABASE_URL=$${DATABASE_URL:?DATABASE_URL required} \
+		uv run python -m cybotech.cli.migrate_vectors \
+		  --qdrant-url $${QDRANT_URL:-http://localhost:6333} \
+		  --qdrant-api-key $${QDRANT_API_KEY:-} \
+		  --dry-run $(ARGS)
+
+vector-migrate: ## Migrate pgvector embeddings to Qdrant (idempotent, never deletes pgvector data)
+	cd backend && \
+		DATABASE_URL=$${DATABASE_URL:?DATABASE_URL required} \
+		uv run python -m cybotech.cli.migrate_vectors \
+		  --qdrant-url $${QDRANT_URL:-http://localhost:6333} \
+		  --qdrant-api-key $${QDRANT_API_KEY:-} \
+		  $(ARGS)
+
+vector-reconcile: ## Detect missing Qdrant vectors (add ARGS="--repair" to fix)
+	cd backend && \
+		DATABASE_URL=$${DATABASE_URL:?DATABASE_URL required} \
+		uv run python -m cybotech.cli.reconcile_vectors \
+		  --qdrant-url $${QDRANT_URL:-http://localhost:6333} \
+		  --qdrant-api-key $${QDRANT_API_KEY:-} \
+		  $(ARGS)
 
 # -----------------------------------------------------------------------------
 # Red-team and evaluation

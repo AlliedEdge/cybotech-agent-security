@@ -1,9 +1,24 @@
+"""
+Integration ports — wires the multi-agent architecture to infrastructure adapters.
+
+Migration note (feat/qdrant-vector-db-migration)
+------------------------------------------------
+``build_security_ports`` and ``build_persistent_graph`` now accept an optional
+``vector_store`` argument.  When provided (production), all vector writes and
+searches route through Qdrant via the VectorStore port.  When omitted (SQLite
+unit tests and legacy callers), the services fall back to the original
+pgvector/Python-cosine paths so no existing tests break.
+
+The multi-agent architecture (SupervisorGraph, PrimaryAssistant, MemoryGuard,
+SentinelAgent, PolicyGateway, VibeHackerGraph) is completely unchanged.
+"""
+
 from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from sqlalchemy.orm import Session
 
@@ -28,6 +43,10 @@ from cybotech.services.policy_gateway.service import PolicyGateway
 from cybotech.services.retrieval.service import Embedder, RetrievalService
 from cybotech.services.sentinel.service import Sentinel, SentinelFinding
 
+if TYPE_CHECKING:
+    from cybotech.infrastructure.vector_store.interface import VectorStore
+    from cybotech.infrastructure.vector_store.outbox import VectorSyncDispatcher
+
 SourceResolver = Callable[[str, str], dict[str, Any] | None]
 
 
@@ -42,8 +61,15 @@ class MemoryGuardPort:
         source_resolver: SourceResolver,
         embedder: Embedder,
         reviewer: MemoryReviewer | None = None,
+        dispatcher: VectorSyncDispatcher | None = None,
     ) -> None:
-        self.guard = MemoryGuard(db, source_resolver, embedder, reviewer)
+        self.guard = MemoryGuard(
+            db,
+            source_resolver,
+            embedder,
+            reviewer,
+            dispatcher=dispatcher,
+        )
 
     def propose_memory(self, proposal: MemoryProposal) -> MemoryDecision:
         return self.guard.propose_memory(proposal)
@@ -55,9 +81,14 @@ class MemoryGuardPort:
 
 
 class TrustedRetrievalPort:
-    def __init__(self, db: Session, embedder: Embedder) -> None:
+    def __init__(
+        self,
+        db: Session,
+        embedder: Embedder,
+        vector_store: VectorStore | None = None,
+    ) -> None:
         self.db = db
-        self.service = RetrievalService(db, embedder)
+        self.service = RetrievalService(db, embedder, vector_store=vector_store)
 
     def retrieve(self, query: RetrievalQuery) -> list[MemoryRecord]:
         rows = self.service.retrieve(
@@ -78,8 +109,19 @@ class TrustedRetrievalPort:
 
 
 class DocumentRetrievalAdapter:
-    def __init__(self, db: Session, embedder: Embedder) -> None:
-        self.service = DocumentService(db, embedder)
+    def __init__(
+        self,
+        db: Session,
+        embedder: Embedder,
+        vector_store: VectorStore | None = None,
+        dispatcher: VectorSyncDispatcher | None = None,
+    ) -> None:
+        self.service = DocumentService(
+            db,
+            embedder,
+            vector_store=vector_store,
+            dispatcher=dispatcher,
+        )
 
     def retrieve(self, query: str, session_id: str) -> list[DocumentEvidence]:
         return self.service.retrieve(query, session_id)
@@ -173,9 +215,16 @@ def build_persistent_assistant(
     correlation_id: str,
     reviewer: Reviewer | None = None,
     memory_reviewer: MemoryReviewer | None = None,
+    vector_store: VectorStore | None = None,
 ) -> Assistant:
     ports = build_security_ports(
-        db, embedder, source_resolver, correlation_id, reviewer, memory_reviewer
+        db,
+        embedder,
+        source_resolver,
+        correlation_id,
+        reviewer,
+        memory_reviewer,
+        vector_store=vector_store,
     )
     dispatcher = SandboxDispatcher(documents)
     return Assistant(
@@ -198,14 +247,30 @@ def build_persistent_graph(
     correlation_id: str,
     reviewer: Reviewer | None = None,
     memory_reviewer: MemoryReviewer | None = None,
+    vector_store: VectorStore | None = None,
 ) -> SupervisorGraph:
     """Build the registered assistant's LangGraph with the established security ports."""
-    ports = build_security_ports(db, embedder, source_resolver, correlation_id, reviewer, None)
+    vs_dispatcher = _make_dispatcher(db, vector_store)
+    ports = build_security_ports(
+        db,
+        embedder,
+        source_resolver,
+        correlation_id,
+        reviewer,
+        None,
+        vector_store=vector_store,
+        vs_dispatcher=vs_dispatcher,
+    )
     return SupervisorGraph(
         model=model,
         memory=ports.memory,
         retrieval=ports.retrieval,
-        document_retrieval=DocumentRetrievalAdapter(db, embedder),
+        document_retrieval=DocumentRetrievalAdapter(
+            db,
+            embedder,
+            vector_store=vector_store,
+            dispatcher=vs_dispatcher,
+        ),
         sentinel=ports.sentinel,
         gateway=ports.gateway,
         dispatcher=SandboxDispatcher(documents),
@@ -222,13 +287,29 @@ def build_security_ports(
     correlation_id: str,
     reviewer: Reviewer | None = None,
     memory_reviewer: MemoryReviewer | None = None,
+    vector_store: VectorStore | None = None,
+    vs_dispatcher: VectorSyncDispatcher | None = None,
 ) -> SecurityPorts:
-    """Builds the Person A Assistant's existing ports without replacing its agent or tools."""
+    """Build security ports.  Accepts an optional VectorStore for Qdrant-backed retrieval."""
+    if vs_dispatcher is None:
+        vs_dispatcher = _make_dispatcher(db, vector_store)
     sentinel = SentinelPortAdapter(reviewer)
     return SecurityPorts(
-        memory=MemoryGuardPort(db, source_resolver, embedder, memory_reviewer),
-        retrieval=TrustedRetrievalPort(db, embedder),
+        memory=MemoryGuardPort(db, source_resolver, embedder, memory_reviewer, vs_dispatcher),
+        retrieval=TrustedRetrievalPort(db, embedder, vector_store=vector_store),
         sentinel=sentinel,
         gateway=PolicyGatewayPort(db, sentinel),
         events=PersistentEventPort(db, correlation_id),
     )
+
+
+def _make_dispatcher(
+    db: Session,
+    vector_store: VectorStore | None,
+) -> VectorSyncDispatcher | None:
+    """Build a VectorSyncDispatcher if a VectorStore is available."""
+    if vector_store is None:
+        return None
+    from cybotech.infrastructure.vector_store.outbox import VectorSyncDispatcher
+
+    return VectorSyncDispatcher(db, vector_store)

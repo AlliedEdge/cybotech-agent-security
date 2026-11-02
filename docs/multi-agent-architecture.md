@@ -171,3 +171,71 @@ intake (correlation id, route by need)
 2. Live providers: `export CYBOTECH_LIVE_PROVIDER_TEST=1` plus provider env, then
    `uv run python -m pytest tests/integration/test_live_provider.py -q -s`. That
    run (and only that run) uses real providers; everything else uses mocks.
+
+---
+
+## Qdrant Vector Database Integration (feat/qdrant-vector-db-migration)
+
+The Primary Assistant's document and memory retrieval paths now route through a
+dedicated Qdrant vector database. The multi-agent security architecture is unchanged.
+
+### What changed
+
+| Component | Before | After |
+|---|---|---|
+| Document retrieval | Python-side cosine ranking (full scan) | Qdrant ANN search → PostgreSQL revalidation |
+| Memory retrieval | pgvector SQL cosine_distance + Python re-check | Qdrant ANN search → PostgreSQL revalidation |
+| Memory writes | PostgreSQL only | PostgreSQL + Qdrant outbox |
+| Trust authority | PostgreSQL | PostgreSQL (unchanged) |
+
+### What did NOT change
+
+- `SupervisorGraph`, `PrimaryAssistant`, `MemoryGuardAgent`, `SentinelAgent` — identical
+- `VibeHackerGraph` / red-team lab — uses SQLite isolation, deliberately no Qdrant
+- `PolicyGateway` — deterministic, reads from PostgreSQL only, independent of Qdrant
+- `DocumentEvidence.trust_label == "untrusted"` — unchanged
+- `is_eligible()` trust gate — still enforced in Python against live PostgreSQL state
+- Memory lifecycle state machine — unchanged
+- Handoff contracts and typed outputs — unchanged
+- Audit events — unchanged
+
+### Security invariants after migration
+
+1. **PostgreSQL is the sole authority on memory trust.** Qdrant metadata cannot grant trust.
+2. **Qdrant search results are IDs only.** Canonical records are always re-fetched from PostgreSQL.
+3. **Session isolation is enforced in PostgreSQL.** The `session_id` WHERE clause in the
+   revalidation query is the authoritative scope boundary — not the Qdrant payload filter.
+4. **Qdrant downtime does not corrupt data.** The transactional outbox retains pending events;
+   writes are never falsely reported as indexed.
+5. **The Policy Gateway reads from PostgreSQL only.** It never reads Qdrant payload for
+   authorization decisions.
+
+### Retrieval architecture
+
+```
+Primary Assistant calls document_retrieval.retrieve(query, session_id)
+  → DocumentService._retrieve_via_qdrant()
+      → embedder.embed(query)                           [generates query vector]
+      → vector_store.search_document_chunks(...)        [Qdrant ANN, session_id filter]
+      → SELECT ... WHERE chunk_id IN (...) AND session_id = ?   [PostgreSQL revalidation]
+      → returns DocumentEvidence (trust_label="untrusted")
+
+Primary Assistant calls retrieval.retrieve(RetrievalQuery)
+  → RetrievalService._retrieve_via_qdrant()
+      → embedder.embed(query)                           [generates query vector]
+      → vector_store.search_memories(...)               [Qdrant ANN, model filter]
+      → SELECT ... WHERE id IN (...) AND status = trusted     [PostgreSQL pre-filter]
+      → is_eligible(m) for each candidate               [canonical trust gate]
+      → returns Memory records (status==trusted, not revoked, not expired)
+```
+
+### How to verify Qdrant integration
+
+```bash
+# Verify Qdrant integration tests (requires live Qdrant):
+export CYBOTECH_TEST_QDRANT_URL=http://localhost:6333
+export CYBOTECH_TEST_QDRANT_API_KEY=<key>
+cd backend && uv run python -m pytest tests/integration/test_qdrant_integration.py \
+  tests/integration/test_qdrant_document_retrieval.py \
+  tests/integration/test_qdrant_memory_retrieval.py -v
+```
