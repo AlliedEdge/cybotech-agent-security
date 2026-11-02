@@ -22,6 +22,7 @@ import re
 from collections.abc import Sequence
 
 from openai import OpenAI
+from openai.types.chat import ChatCompletionMessageParam
 
 from cybotech.agents.contracts import AgentTurn, ModelContext
 
@@ -63,7 +64,7 @@ class OpenAIProvider:
         self.name = f"{os.getenv('CYBOTECH_PROVIDER', 'openai')}:{model}"
 
     def generate(self, context: ModelContext) -> AgentTurn:
-        messages = [
+        messages: list[ChatCompletionMessageParam] = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": context.model_dump_json()},
         ]
@@ -90,22 +91,22 @@ class OpenAIProvider:
                 raise  # Refusal must propagate; do not fall through to fallback
             # Strategy 2: JSON mode — works with most local servers
             try:
-                completion = self.client.chat.completions.create(
+                json_completion = self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
                     response_format={"type": "json_object"},
                     max_tokens=2000,
                 )
-                raw = completion.choices[0].message.content or ""
+                raw = json_completion.choices[0].message.content or ""
             except Exception:
                 # Strategy 3: plain completion, extract JSON from response
                 try:
-                    completion = self.client.chat.completions.create(
+                    plain_completion = self.client.chat.completions.create(
                         model=self.model,
                         messages=messages,
                         max_tokens=2000,
                     )
-                    raw = completion.choices[0].message.content or ""
+                    raw = plain_completion.choices[0].message.content or ""
                 except Exception as final_error:
                     raise ValueError(
                         f"Local LLM call failed. Check that your server is running "
